@@ -2130,7 +2130,7 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyExecuteCommandLists(
         // submit of the frame. Every-submit flushing rescanned every texture
         // for every command list the title queued.
         const uint64_t epoch = g_frame_epoch.load(std::memory_order_relaxed);
-        if (g_flushed_epoch.load(std::memory_order_relaxed) != epoch) {
+        if (epoch == 0 || g_flushed_epoch.load(std::memory_order_relaxed) != epoch) {
             LARGE_INTEGER freq{}, start{}, end{};
             QueryPerformanceFrequency(&freq);
             QueryPerformanceCounter(&start);
