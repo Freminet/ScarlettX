@@ -82,6 +82,7 @@ add_library(xgameruntime SHARED
     src/shims/xgameruntime_shim.cpp
     src/shims/xgr_api_tables.cpp
     src/shims/xgr_invite.cpp
+    src/shims/xgr_accessibility.cpp
     src/shims/xgr_task_queue.cpp)
 set_target_properties(xgameruntime PROPERTIES PREFIX "" OUTPUT_NAME "xgameruntime")
 target_link_libraries(xgameruntime PRIVATE scarlettx_core)
@@ -320,6 +321,8 @@ scarlettx_add_test(test_xaudio2_guest tests/test_xaudio2_guest.cpp)
 target_link_libraries(test_xaudio2_guest PRIVATE xaudio2_9)
 scarlettx_add_test(test_gameinput tests/test_gameinput.cpp)
 target_link_libraries(test_gameinput PRIVATE GameInput)
+scarlettx_add_test(test_xaccessibility tests/test_xaccessibility.cpp)
+target_link_libraries(test_xaccessibility PRIVATE xgameruntime)
 scarlettx_add_test(test_xgameinvite tests/test_xgameinvite.cpp)
 target_link_libraries(test_xgameinvite PRIVATE xgameruntime)
 

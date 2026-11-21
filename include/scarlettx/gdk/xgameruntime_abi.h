@@ -478,6 +478,52 @@ SCARLETTX_XGR_API bool XGameInviteUnregisterForEvent(
     bool wait);
 
 // ---------------------------------------------------------------------------
+// XAccessibility.h
+// ---------------------------------------------------------------------------
+enum XHighContrastMode : uint32_t {
+    XHighContrastMode_Off = 0,
+    XHighContrastMode_Dark = 1,
+    XHighContrastMode_Light = 2,
+    XHighContrastMode_Other = 3,
+};
+
+enum XSpeechToTextType : uint32_t {
+    XSpeechToTextType_Voice = 0,
+    XSpeechToTextType_Text = 1,
+};
+
+enum XSpeechToTextPositionHint : uint32_t {
+    XSpeechToTextPositionHint_BottomCenter = 0,
+    XSpeechToTextPositionHint_BottomLeft = 1,
+    XSpeechToTextPositionHint_BottomRight = 2,
+    XSpeechToTextPositionHint_MiddleRight = 3,
+    XSpeechToTextPositionHint_MiddleLeft = 4,
+    XSpeechToTextPositionHint_TopCenter = 5,
+    XSpeechToTextPositionHint_TopLeft = 6,
+    XSpeechToTextPositionHint_TopRight = 7,
+};
+
+SCARLETTX_XGR_API XGameResult XClosedCaptionSetEnabled(bool enabled);
+SCARLETTX_XGR_API XGameResult XHighContrastGetMode(XHighContrastMode* mode);
+SCARLETTX_XGR_API XGameResult XSpeechToTextBeginHypothesisString(
+    const char* speakerName,
+    const char* content,
+    XSpeechToTextType type,
+    uint32_t* hypothesisId);
+SCARLETTX_XGR_API XGameResult XSpeechToTextUpdateHypothesisString(
+    uint32_t hypothesisId,
+    const char* content);
+SCARLETTX_XGR_API XGameResult XSpeechToTextFinalizeHypothesisString(
+    uint32_t hypothesisId,
+    const char* content);
+SCARLETTX_XGR_API XGameResult XSpeechToTextCancelHypothesisString(uint32_t hypothesisId);
+SCARLETTX_XGR_API XGameResult XSpeechToTextSendString(
+    const char* speakerName,
+    const char* content,
+    XSpeechToTextType type);
+SCARLETTX_XGR_API XGameResult XSpeechToTextSetPositionHint(XSpeechToTextPositionHint position);
+
+// ---------------------------------------------------------------------------
 // XMem.h (GDK Memory & Unified Virtual Memory Hooks)
 // ---------------------------------------------------------------------------
 typedef void*(SCARLETTX_GDK_CALLBACK XMemAllocFunction)(
