@@ -362,6 +362,13 @@ SCARLETTX_XGR_API XGameResult XUserCheckPrivilege(
 SCARLETTX_XGR_API XGameResult XUserGetDefaultXuid(uint64_t* out_xuid);
 
 // ---------------------------------------------------------------------------
+// XPackage.h
+// ---------------------------------------------------------------------------
+SCARLETTX_XGR_API bool XPackageIsPackagedProcess();
+SCARLETTX_XGR_API XGameResult XPackageGetCurrentProcessPackageIdentifier(size_t bufferSize, char* buffer);
+SCARLETTX_XGR_API XGameResult XPackageGetUserLocale(size_t localeSize, char* locale);
+
+// ---------------------------------------------------------------------------
 // XGameSave.h
 // ---------------------------------------------------------------------------
 typedef struct XGameSaveProvider* XGameSaveProviderHandle;
