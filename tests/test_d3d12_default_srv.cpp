@@ -24,17 +24,17 @@ enum ListSlot {
     Barrier = 26, SetHeaps = 32, SetComputeRootSignature = 33,
     SetComputeTable = 35, SetComputeUav = 45
 };
-enum ResourceSlot { Map = 8, Unmap = 9, GetAddress = 11 };
+enum ResourceSlot { Map = 8, Unmap = 9, GetDesc = 10, GetAddress = 11 };
 enum HeapSlot { GetCpuStart = 9, GetGpuStart = 10 };
 enum QueueSlot { Submit = 10, Signal = 14 };
 constexpr int kCompletedValue = 8;
 
-constexpr void* kNull = nullptr;
+constexpr int kRelease = 2;
 constexpr uintptr_t kZero = 0;
 constexpr unsigned kMipCount = 2;
-constexpr unsigned kWidth = 4;
+constexpr unsigned kTextureSize = 4;
 constexpr unsigned kPitch = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
-constexpr unsigned kSubresourceStride = kPitch * kWidth;
+constexpr unsigned kSubresourceStride = D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
 constexpr DXGI_FORMAT kFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr std::array<std::array<uint8_t, 4>, 4> kColors{{
     {{17, 31, 63, 255}}, {{29, 57, 97, 255}},
@@ -42,11 +42,22 @@ constexpr std::array<std::array<uint8_t, 4>, 4> kColors{{
 }};
 using Pixel = std::array<uint32_t, 4>;
 
+using ProxySlot = intptr_t (SCARLETTX_GDK_CALLBACK*)(void*, uintptr_t, uintptr_t, uintptr_t);
+
+uintptr_t ProxyArgument(uintptr_t value) { return value; }
+
+template <typename T>
+uintptr_t ProxyArgument(T* pointer) {
+    return reinterpret_cast<uintptr_t>(pointer);
+}
+
+// Proxy methods take word-sized arguments. Extended slots use the same
+// signature with additional words, stored in the vtable as ProxySlot.
 template <typename... Args>
 intptr_t Call(void* object, int slot, Args... args) {
-    void** vtable = *reinterpret_cast<void***>(object);
-    using Fn = intptr_t (SCARLETTX_GDK_CALLBACK*)(void*, Args...);
-    return reinterpret_cast<Fn>(vtable[slot])(object, args...);
+    const auto* vtable = *static_cast<const ProxySlot* const*>(object);
+    using Method = intptr_t (SCARLETTX_GDK_CALLBACK*)(void*, decltype(ProxyArgument(args))...);
+    return reinterpret_cast<Method>(vtable[slot])(object, ProxyArgument(args)...);
 }
 
 void* MakeResource(void* device, D3D12_HEAP_TYPE heap, const D3D12_RESOURCE_DESC& desc,
@@ -55,7 +66,7 @@ void* MakeResource(void* device, D3D12_HEAP_TYPE heap, const D3D12_RESOURCE_DESC
     properties.Type = heap;
     void* resource = nullptr;
     SX_REQUIRE(Call(device, CreateResource, &properties, kZero, &desc,
-                    static_cast<uintptr_t>(state), kNull, kNull, &resource) == 0);
+                    static_cast<uintptr_t>(state), kZero, kZero, &resource) == 0);
     SX_REQUIRE(resource);
     return resource;
 }
@@ -81,36 +92,30 @@ void Transition(void* list, void* resource, D3D12_RESOURCE_STATES before,
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     barrier.Transition.StateBefore = before;
     barrier.Transition.StateAfter = after;
-    Call(list, Barrier, uintptr_t{1}, &barrier);
+    Call(list, Barrier, uintptr_t{1}, &barrier, kZero);
 }
 
 void UploadTexture(void* list, void* texture, void* upload, unsigned subresources) {
     void* data = nullptr;
-    SX_REQUIRE(Call(upload, Map, kZero, kNull, &data) == 0 && data);
+    SX_REQUIRE(Call(upload, Map, kZero, kZero, &data) == 0 && data);
     auto* bytes = static_cast<uint8_t*>(data);
-    std::memset(bytes, 0, subresources * kSubresourceStride);
+    // The shader reads only texel (0, 0) from each subresource.
     for (unsigned i = 0; i < subresources; ++i) {
-        const unsigned size = kWidth >> (i % kMipCount);
-        for (unsigned y = 0; y < size; ++y) {
-            for (unsigned x = 0; x < size; ++x) {
-                std::memcpy(bytes + i * kSubresourceStride + y * kPitch + x * 4,
-                            kColors[i].data(), kColors[i].size());
-            }
-        }
+        std::memcpy(bytes + i * kSubresourceStride, kColors[i].data(), kColors[i].size());
     }
-    Call(upload, Unmap, kZero, kNull);
+    Call(upload, Unmap, kZero, kZero, kZero);
+
     for (unsigned i = 0; i < subresources; ++i) {
-        const unsigned size = kWidth >> (i % kMipCount);
         D3D12_TEXTURE_COPY_LOCATION src{};
         src.pResource = static_cast<ID3D12Resource*>(upload);
         src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         src.PlacedFootprint.Offset = i * kSubresourceStride;
-        src.PlacedFootprint.Footprint = {kFormat, size, size, 1, kPitch};
+        src.PlacedFootprint.Footprint = {kFormat, 1, 1, 1, kPitch};
         D3D12_TEXTURE_COPY_LOCATION dst{};
         dst.pResource = static_cast<ID3D12Resource*>(texture);
         dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         dst.SubresourceIndex = i;
-        Call(list, CopyTexture, &dst, kZero, kZero, kZero, &src, kNull);
+        Call(list, CopyTexture, &dst, kZero, kZero, kZero, &src, kZero);
     }
     Transition(list, texture, D3D12_RESOURCE_STATE_COPY_DEST,
                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -162,34 +167,36 @@ void MakePipeline(void* device, bool single, void** root, void** pipeline) {
     SX_REQUIRE(SUCCEEDED(D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1,
                                                     &serialized, nullptr)));
     SX_REQUIRE(Call(device, CreateRootSignature, kZero, serialized->GetBufferPointer(),
-                    serialized->GetBufferSize(), kNull, root) == 0);
+                    serialized->GetBufferSize(), kZero, root) == 0);
     serialized->Release();
     D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc{};
     psoDesc.pRootSignature = static_cast<ID3D12RootSignature*>(*root);
     psoDesc.CS = {code->GetBufferPointer(), code->GetBufferSize()};
-    SX_REQUIRE(Call(device, CreateComputePso, &psoDesc, kNull, pipeline) == 0);
+    SX_REQUIRE(Call(device, CreateComputePso, &psoDesc, kZero, pipeline) == 0);
     code->Release();
     SX_REQUIRE(*root && *pipeline);
 }
 
-D3D12_SHADER_RESOURCE_VIEW_DESC NullSrv(bool single) {
+D3D12_SHADER_RESOURCE_VIEW_DESC NullSrv(unsigned slices) {
     D3D12_SHADER_RESOURCE_VIEW_DESC desc{};
     desc.Format = kFormat;
     desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    if (single) {
+    if (slices == 1) {
         desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        desc.Texture2D = {};
         desc.Texture2D.MipLevels = kMipCount;
     } else {
         desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        desc.Texture2DArray = {};
         desc.Texture2DArray.MipLevels = kMipCount;
-        desc.Texture2DArray.ArraySize = 2;
+        desc.Texture2DArray.ArraySize = slices;
     }
     return desc;
 }
 
 bool Verify(void* readback, unsigned subresources) {
     void* mapped = nullptr;
-    SX_REQUIRE(Call(readback, Map, kZero, kNull, &mapped) == 0 && mapped);
+    SX_REQUIRE(Call(readback, Map, kZero, kZero, &mapped) == 0 && mapped);
     bool match = true;
     for (unsigned i = 0; i < subresources; ++i) {
         Pixel got{};
@@ -203,7 +210,7 @@ bool Verify(void* readback, unsigned subresources) {
                     unsigned(expected[2]), unsigned(expected[3]), got[0], got[1], got[2], got[3],
                     correct ? "PASS" : "FAIL");
     }
-    Call(readback, Unmap, kZero, kNull);
+    Call(readback, Unmap, kZero, kZero, kZero);
     return match;
 }
 
@@ -228,26 +235,31 @@ int main(int argc, char** argv) {
     void* allocator = nullptr;
     void* list = nullptr;
     void* fence = nullptr;
-    SX_REQUIRE(Call(device, CreateQueue, &queueDesc, kNull, &queue) == 0 && queue);
+    SX_REQUIRE(Call(device, CreateQueue, &queueDesc, kZero, &queue) == 0 && queue);
     SX_REQUIRE(Call(device, CreateAllocator, uintptr_t{D3D12_COMMAND_LIST_TYPE_DIRECT},
-                    kNull, &allocator) == 0 && allocator);
-    SX_REQUIRE(Call(device, CreateFence, kZero, kZero, kNull, &fence) == 0 && fence);
+                    kZero, &allocator) == 0 && allocator);
+    SX_REQUIRE(Call(device, CreateFence, kZero, kZero, kZero, &fence) == 0 && fence);
     void* root = nullptr;
     void* pipeline = nullptr;
     MakePipeline(device, single, &root, &pipeline);
     SX_REQUIRE(Call(device, CreateList, kZero, uintptr_t{D3D12_COMMAND_LIST_TYPE_DIRECT},
-                    allocator, pipeline, kNull, &list) == 0 && list);
+                    allocator, pipeline, kZero, &list) == 0 && list);
 
     D3D12_RESOURCE_DESC textureDesc{};
     textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    textureDesc.Width = kWidth;
-    textureDesc.Height = kWidth;
+    textureDesc.Width = kTextureSize;
+    textureDesc.Height = kTextureSize;
     textureDesc.DepthOrArraySize = static_cast<UINT16>(slices);
     textureDesc.MipLevels = kMipCount;
     textureDesc.Format = kFormat;
     textureDesc.SampleDesc.Count = 1;
     void* texture = MakeResource(device, D3D12_HEAP_TYPE_DEFAULT, textureDesc,
                                  D3D12_RESOURCE_STATE_COPY_DEST);
+    // Verify that the test exercises descriptor synthesis on a typeless resource.
+    D3D12_RESOURCE_DESC hostDesc{};
+    Call(texture, GetDesc, &hostDesc, kZero, kZero);
+    SX_REQUIRE(hostDesc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS);
+
     void* upload = MakeResource(device, D3D12_HEAP_TYPE_UPLOAD,
                                 Buffer(subresources * kSubresourceStride, D3D12_RESOURCE_FLAG_NONE),
                                 D3D12_RESOURCE_STATE_GENERIC_READ);
@@ -264,14 +276,14 @@ int main(int argc, char** argv) {
     heapDesc.NumDescriptors = 1;
     heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     void* heap = nullptr;
-    SX_REQUIRE(Call(device, CreateDescriptorHeap, &heapDesc, kNull, &heap) == 0 && heap);
+    SX_REQUIRE(Call(device, CreateDescriptorHeap, &heapDesc, kZero, &heap) == 0 && heap);
     const auto cpu = static_cast<uintptr_t>(Call(heap, GetCpuStart, kZero, kZero, kZero));
     const auto gpu = static_cast<uintptr_t>(Call(heap, GetGpuStart, kZero, kZero, kZero));
     SX_REQUIRE(cpu && gpu);
     // Give the shader a defined null binding if descriptor creation fails.
-    const auto nullDesc = NullSrv(single);
-    Call(device, CreateSrv, kNull, &nullDesc, cpu);
-    Call(device, CreateSrv, texture, kNull, cpu);
+    const auto nullDesc = NullSrv(slices);
+    Call(device, CreateSrv, kZero, &nullDesc, cpu);
+    Call(device, CreateSrv, texture, kZero, cpu);
 
     Call(list, SetComputeRootSignature, root, kZero, kZero);
     Call(list, SetHeaps, uintptr_t{1}, &heap, kZero);
@@ -286,10 +298,20 @@ int main(int argc, char** argv) {
     Call(queue, Submit, uintptr_t{1}, &list, kZero);
     SX_REQUIRE(Call(queue, Signal, fence, uintptr_t{1}, kZero) == 0);
     const ULONGLONG start = GetTickCount64();
-    while (Call(fence, kCompletedValue, kZero, kZero, kZero) < 1) {
+    intptr_t completed = 0;
+    while ((completed = Call(fence, kCompletedValue, kZero, kZero, kZero)) == 0) {
         SX_REQUIRE(GetTickCount64() - start < 5000);
         Sleep(1);
     }
-    SX_REQUIRE(Verify(readback, subresources));
+    // A removed D3D12 device reports UINT64_MAX instead of the signaled value.
+    SX_REQUIRE(completed == 1);
+
+    const bool matches = Verify(readback, subresources);
+    const std::array objects{list, fence, heap, readback, output, upload, texture,
+                             pipeline, root, allocator, queue, device};
+    for (void* object : objects) {
+        Call(object, kRelease, kZero, kZero, kZero);
+    }
+    SX_REQUIRE(matches);
     return 0;
 }

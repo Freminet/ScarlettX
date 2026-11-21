@@ -3200,10 +3200,12 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyCreateShaderResourceView(
             // A default texture SRV covers all mips and array slices.
             if (resource_desc.SampleDesc.Count == 1 && resource_desc.DepthOrArraySize > 1) {
                 synth_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                synth_desc.Texture2DArray = {};
                 synth_desc.Texture2DArray.MipLevels = ~0u;
                 synth_desc.Texture2DArray.ArraySize = resource_desc.DepthOrArraySize;
             } else {
                 synth_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                synth_desc.Texture2D = {};
                 synth_desc.Texture2D.MipLevels = ~0u;
             }
             d = &synth_desc;
