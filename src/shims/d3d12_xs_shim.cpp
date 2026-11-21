@@ -3193,11 +3193,21 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyCreateShaderResourceView(
         ID3D12Resource* pc_res = res_proxy ? res_proxy->pc_res : nullptr;
         auto* d = reinterpret_cast<const D3D12_SHADER_RESOURCE_VIEW_DESC*>(pDesc);
         D3D12_SHADER_RESOURCE_VIEW_DESC synth_desc = {};
-        if (!d && res_proxy && res_proxy->promoted_typeless && res_proxy->guest_format != DXGI_FORMAT_UNKNOWN) {
+        if (!d && pc_res && res_proxy->promoted_typeless && res_proxy->guest_format != DXGI_FORMAT_UNKNOWN) {
+            const D3D12_RESOURCE_DESC resource_desc = pc_res->GetDesc();
             synth_desc.Format = res_proxy->guest_format;
-            synth_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
             synth_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            synth_desc.Texture2D.MipLevels = ~0u;
+            // A default texture SRV covers all mips and array slices.
+            if (resource_desc.SampleDesc.Count == 1 && resource_desc.DepthOrArraySize > 1) {
+                synth_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                synth_desc.Texture2DArray = {};
+                synth_desc.Texture2DArray.MipLevels = ~0u;
+                synth_desc.Texture2DArray.ArraySize = resource_desc.DepthOrArraySize;
+            } else {
+                synth_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                synth_desc.Texture2D = {};
+                synth_desc.Texture2D.MipLevels = ~0u;
+            }
             d = &synth_desc;
         }
         if (TraceEnabled() && n <= 8) {
