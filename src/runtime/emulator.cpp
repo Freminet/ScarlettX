@@ -185,8 +185,16 @@ Status Emulator::BootPackage(const std::string& package_dir) {
     std::string cmd = "\"" + report.executable_path + "\"";
     std::string work_dir = std::filesystem::path(report.executable_path).parent_path().string();
 
-    if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr,
-                        work_dir.c_str(), &si, &pi)) {
+    // Searched before System32 and inherited by the child; PATH is not.
+    if (!shim_dir.empty()) {
+        SetDllDirectoryA(shim_dir.c_str());
+    }
+    const BOOL created = CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                                        work_dir.c_str(), &si, &pi);
+    if (!shim_dir.empty()) {
+        SetDllDirectoryA(nullptr);
+    }
+    if (!created) {
         return Status::Error(StatusCode::DeviceError,
                              "CreateProcessA failed for guest executable: " + report.executable_path);
     }
