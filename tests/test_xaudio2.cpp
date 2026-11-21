@@ -193,6 +193,69 @@ int main() {
             SX_CHECK(matrix[1] > matrix[0]);
         }
     }
+
+    // Apo factories: forwarded to the host XAudio2, so the objects are the host's
+    // real XAPOs. IIDs from xapo.h; GUIDs are compared byte-wise, so they are
+    // spelled out here to keep this file free of the XAPO headers.
+    {
+        struct Guid {
+            uint32_t data1;
+            uint16_t data2;
+            uint16_t data3;
+            uint8_t data4[8];
+        };
+        const Guid iid_ixapo{0xA410B984u, 0x9839u, 0x4819u,
+                             {0xA0, 0xBE, 0x28, 0x56, 0xAE, 0x6B, 0x3A, 0xDB}};
+        const Guid iid_ixapo_parameters{0x26D95C66u, 0x80F2u, 0x499Au,
+                                         {0xAD, 0x54, 0x5A, 0xE7, 0xF0, 0x1C, 0x6D, 0x98}};
+        const Guid iid_bogus{0xDEADBEEFu, 0x1234u, 0x5678u,
+                             {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}};
+        // COM objects start with a vtable pointer; call the three IUnknown slots
+        // through it. On x64 Windows there is a single calling convention.
+        const auto query_interface = [](void* object, const void* iid, void** out) {
+            using Fn = int32_t(WINAPI*)(void*, const void*, void**);
+            auto** vtable = *static_cast<void***>(object);
+            return reinterpret_cast<Fn>(vtable[0])(object, iid, out);
+        };
+        const auto release = [](void* object) {
+            using Fn = uint32_t(WINAPI*)(void*);
+            auto** vtable = *static_cast<void***>(object);
+            return reinterpret_cast<Fn>(vtable[2])(object);
+        };
+        struct Factory {
+            int32_t (*create)(void**);
+            const char* name;
+        };
+        const Factory factories[] = {
+            {&CreateAudioReverb, "CreateAudioReverb"},
+            {&CreateAudioVolumeMeter, "CreateAudioVolumeMeter"},
+        };
+        for (const auto& factory : factories) {
+            void* apo = nullptr;
+            const int32_t hr = factory.create(&apo);
+            if (hr != 0) {
+                std::cerr << "[test_xaudio2] " << factory.name
+                          << " not available on this host (hr=0x" << std::hex << hr << std::dec
+                          << "): skipping the factory checks\n";
+                continue;
+            }
+            SX_CHECK(apo != nullptr);
+            void* ixapo = nullptr;
+            SX_CHECK(query_interface(apo, &iid_ixapo, &ixapo) == 0 && ixapo != nullptr);
+            SX_CHECK(release(ixapo) >= 1);
+            void* parameters = nullptr;
+            SX_CHECK(query_interface(apo, &iid_ixapo_parameters, &parameters) == 0 &&
+                     parameters != nullptr);
+            SX_CHECK(release(parameters) >= 1);
+            void* bogus = nullptr;
+            SX_CHECK(query_interface(apo, &iid_bogus, &bogus) ==
+                     static_cast<int32_t>(0x80004002u));
+            SX_CHECK(bogus == nullptr);
+            SX_CHECK(release(apo) == 0);
+            // A null output is an argument error, not a crash.
+            SX_CHECK(factory.create(nullptr) == static_cast<int32_t>(0x80004003u));
+        }
+    }
 #endif
 
     std::cout << "[test_xaudio2] All XAudio2 + XMA2 HLE checks passed.\n";

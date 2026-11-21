@@ -525,6 +525,45 @@ HMODULE HostXAudio2Dll() {
     return host_dll;
 }
 
+// The host engine opens its device through COM and its XAPO factories expect the
+// caller to have initialised an apartment. A console title never calls
+// CoInitializeEx, so keep the multithreaded apartment alive for it.
+void EnsureHostComApartment() {
+    static const bool mta_held = [] {
+        using IncrementFn = int32_t (WINAPI*)(void**);
+        const HMODULE combase = LoadLibraryW(L"combase.dll");
+        const auto increment = combase
+            ? reinterpret_cast<IncrementFn>(reinterpret_cast<void*>(GetProcAddress(combase, "CoIncrementMTAUsage")))
+            : nullptr;
+        void* cookie = nullptr;
+        return increment && increment(&cookie) >= 0;
+    }();
+    (void)mta_held;
+}
+
+// CreateAudioReverb / CreateAudioVolumeMeter: the factories behind the inline
+// XAudio2CreateReverb/XAudio2CreateVolumeMeter wrappers. Forwarding hands the
+// title the host's real XAPO, so reference counting, IXAPO/IXAPOParameters and
+// the DSP are correct by construction.
+int32_t ForwardApoFactory(const char* export_name, void** pp_apo) {
+    if (!pp_apo) {
+        // Not documented for these two; the host returns E_POINTER (observed).
+        return static_cast<int32_t>(0x80004003u);
+    }
+    *pp_apo = nullptr;
+    using FactoryFn = int32_t (WINAPI*)(void**);
+    const HMODULE dll = HostXAudio2Dll();
+    const auto factory = dll
+        ? reinterpret_cast<FactoryFn>(reinterpret_cast<void*>(GetProcAddress(dll, export_name)))
+        : nullptr;
+    if (!factory) {
+        // E_FAIL, like the X3DAudio forwarders: the effect does not exist here.
+        return static_cast<int32_t>(0x80004005u);
+    }
+    EnsureHostComApartment();
+    return factory(pp_apo);
+}
+
 }  // namespace
 
 extern "C" int32_t ScarlettXGuestXAudio2Create(void** out, uint32_t flags, uint32_t processor) {
@@ -537,16 +576,7 @@ extern "C" int32_t ScarlettXGuestXAudio2Create(void** out, uint32_t flags, uint3
         : nullptr;
     // The host engine opens its device through COM. A console title never
     // initializes COM, so keep the multithreaded apartment alive for it.
-    static const bool mta_held = [] {
-        using IncrementFn = int32_t (WINAPI*)(void**);
-        const HMODULE combase = LoadLibraryW(L"combase.dll");
-        const auto increment = combase
-            ? reinterpret_cast<IncrementFn>(reinterpret_cast<void*>(GetProcAddress(combase, "CoIncrementMTAUsage")))
-            : nullptr;
-        void* cookie = nullptr;
-        return increment && increment(&cookie) >= 0;
-    }();
-    (void)mta_held;
+    EnsureHostComApartment();
     const char* force_silent = std::getenv("SCARLETTX_XAUDIO2_SILENT");
     void* host = nullptr;
     bool silent = false;
@@ -586,6 +616,14 @@ extern "C" __declspec(dllexport) int32_t X3DAudioInitialize(uint32_t speaker_cha
     return init_fn(speaker_channel_mask, speed_of_sound, instance);
 }
 
+extern "C" __declspec(dllexport) int32_t CreateAudioReverb(void** pp_apo) {
+    return ForwardApoFactory("CreateAudioReverb", pp_apo);
+}
+
+extern "C" __declspec(dllexport) int32_t CreateAudioVolumeMeter(void** pp_apo) {
+    return ForwardApoFactory("CreateAudioVolumeMeter", pp_apo);
+}
+
 extern "C" __declspec(dllexport) void X3DAudioCalculate(const uint8_t* instance,
                                                         const void* listener,
                                                         const void* emitter,
@@ -615,5 +653,15 @@ extern "C" int32_t X3DAudioInitialize(uint32_t, float, uint8_t*) {
 }
 
 extern "C" void X3DAudioCalculate(const uint8_t*, const void*, const void*, uint32_t, void*) {}
+
+extern "C" int32_t CreateAudioReverb(void** pp_apo) {
+    if (pp_apo) *pp_apo = nullptr;
+    return static_cast<int32_t>(0x80004001u);
+}
+
+extern "C" int32_t CreateAudioVolumeMeter(void** pp_apo) {
+    if (pp_apo) *pp_apo = nullptr;
+    return static_cast<int32_t>(0x80004001u);
+}
 
 #endif

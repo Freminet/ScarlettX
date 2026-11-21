@@ -25,3 +25,5 @@ EXPORTS
     Xma2DecodePacket @23
     X3DAudioInitialize
     X3DAudioCalculate
+    CreateAudioReverb
+    CreateAudioVolumeMeter
