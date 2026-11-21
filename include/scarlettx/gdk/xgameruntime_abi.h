@@ -464,6 +464,111 @@ SCARLETTX_XGR_API XGameResult XGameSaveEnumerateBlobInfo(
     XGameSaveBlobInfoCallback* callback);
 
 // ---------------------------------------------------------------------------
+// XGameInvite.h
+// ---------------------------------------------------------------------------
+typedef void(SCARLETTX_GDK_CALLBACK XGameInviteEventCallback)(void* context, const char* inviteUri);
+
+SCARLETTX_XGR_API XGameResult XGameInviteRegisterForEvent(
+    XTaskQueueHandle queue,
+    void* context,
+    XGameInviteEventCallback* callback,
+    XTaskQueueRegistrationToken* token);
+SCARLETTX_XGR_API bool XGameInviteUnregisterForEvent(
+    XTaskQueueRegistrationToken token,
+    bool wait);
+
+// ---------------------------------------------------------------------------
+// XAccessibility.h
+// ---------------------------------------------------------------------------
+enum XHighContrastMode : uint32_t {
+    XHighContrastMode_Off = 0,
+    XHighContrastMode_Dark = 1,
+    XHighContrastMode_Light = 2,
+    XHighContrastMode_Other = 3,
+};
+
+enum XSpeechToTextType : uint32_t {
+    XSpeechToTextType_Voice = 0,
+    XSpeechToTextType_Text = 1,
+};
+
+enum XSpeechToTextPositionHint : uint32_t {
+    XSpeechToTextPositionHint_BottomCenter = 0,
+    XSpeechToTextPositionHint_BottomLeft = 1,
+    XSpeechToTextPositionHint_BottomRight = 2,
+    XSpeechToTextPositionHint_MiddleRight = 3,
+    XSpeechToTextPositionHint_MiddleLeft = 4,
+    XSpeechToTextPositionHint_TopCenter = 5,
+    XSpeechToTextPositionHint_TopLeft = 6,
+    XSpeechToTextPositionHint_TopRight = 7,
+};
+
+SCARLETTX_XGR_API XGameResult XClosedCaptionSetEnabled(bool enabled);
+SCARLETTX_XGR_API XGameResult XHighContrastGetMode(XHighContrastMode* mode);
+SCARLETTX_XGR_API XGameResult XSpeechToTextBeginHypothesisString(
+    const char* speakerName,
+    const char* content,
+    XSpeechToTextType type,
+    uint32_t* hypothesisId);
+SCARLETTX_XGR_API XGameResult XSpeechToTextUpdateHypothesisString(
+    uint32_t hypothesisId,
+    const char* content);
+SCARLETTX_XGR_API XGameResult XSpeechToTextFinalizeHypothesisString(
+    uint32_t hypothesisId,
+    const char* content);
+SCARLETTX_XGR_API XGameResult XSpeechToTextCancelHypothesisString(uint32_t hypothesisId);
+SCARLETTX_XGR_API XGameResult XSpeechToTextSendString(
+    const char* speakerName,
+    const char* content,
+    XSpeechToTextType type);
+SCARLETTX_XGR_API XGameResult XSpeechToTextSetPositionHint(XSpeechToTextPositionHint position);
+
+// ---------------------------------------------------------------------------
+// XSpeechSynthesizer.h
+// ---------------------------------------------------------------------------
+typedef struct XSpeechSynthesizer* XSpeechSynthesizerHandle;
+typedef struct XSpeechSynthesizerStream* XSpeechSynthesizerStreamHandle;
+
+// Only ever received by the enumeration callback: its fields are not public and
+// this HLE never creates one.
+struct XSpeechSynthesizerVoiceInformation;
+
+typedef bool(SCARLETTX_GDK_CALLBACK XSpeechSynthesizerInstalledVoicesCallback)(
+    const XSpeechSynthesizerVoiceInformation* information,
+    void* context);
+
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerCreate(
+    XSpeechSynthesizerHandle* speechSynthesizer);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerCloseHandle(
+    XSpeechSynthesizerHandle speechSynthesizer);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerCreateStreamFromText(
+    XSpeechSynthesizerHandle speechSynthesizer,
+    const char* text,
+    XSpeechSynthesizerStreamHandle* speechSynthesisStream);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerCreateStreamFromSsml(
+    XSpeechSynthesizerHandle speechSynthesizer,
+    const char* ssml,
+    XSpeechSynthesizerStreamHandle* speechSynthesisStream);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerCloseStreamHandle(
+    XSpeechSynthesizerStreamHandle speechSynthesisStream);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerGetStreamDataSize(
+    XSpeechSynthesizerStreamHandle speechSynthesisStream,
+    size_t* bufferSize);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerGetStreamData(
+    XSpeechSynthesizerStreamHandle speechSynthesisStream,
+    size_t bufferSize,
+    void* buffer,
+    size_t* bufferUsed);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerSetDefaultVoice(
+    XSpeechSynthesizerHandle speechSynthesizer);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerSetCustomVoice(
+    XSpeechSynthesizerHandle speechSynthesizer,
+    const char* voiceId);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerEnumerateInstalledVoices(
+    void* context,
+    XSpeechSynthesizerInstalledVoicesCallback* callback);
+
+// ---------------------------------------------------------------------------
 // XMem.h (GDK Memory & Unified Virtual Memory Hooks)
 // ---------------------------------------------------------------------------
 typedef void*(SCARLETTX_GDK_CALLBACK XMemAllocFunction)(
