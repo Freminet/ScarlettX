@@ -21,8 +21,10 @@ add_library(scarlettx_core STATIC
     src/kernel/xruntime.cpp
     src/kernel/xstorage.cpp
     src/gpu/d3d12_backend.cpp
+    src/gpu/dxr_hardware.cpp
     src/gpu/rt_bvh.cpp
     src/gpu/shader_ir.cpp
+    src/gpu/vulkan_backend.cpp
     src/gpu/xg_layout.cpp
     src/runtime/emulator.cpp
     src/runtime/virtual_drive.cpp
@@ -311,6 +313,7 @@ set_tests_properties(test_d3d12_present_window PROPERTIES ENVIRONMENT "SCARLETTX
 scarlettx_add_test(test_d3d12_xs_abi tests/test_d3d12_xs_abi.cpp)
 target_link_libraries(test_d3d12_xs_abi PRIVATE d3d12_xs XboxBvhBuilder)
 scarlettx_add_test(test_rt_pipeline tests/test_rt_pipeline.cpp)
+scarlettx_add_test(test_dxr_vulkan tests/test_dxr_vulkan.cpp)
 scarlettx_add_test(test_dstorage_xvd tests/test_dstorage_xvd.cpp)
 target_link_libraries(test_dstorage_xvd PRIVATE dstorage)
 scarlettx_add_test(test_xaudio2 tests/test_xaudio2.cpp)
