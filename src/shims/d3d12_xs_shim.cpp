@@ -15,6 +15,7 @@
 #include "scarlettx/gpu/xg_layout.h"
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -726,6 +727,7 @@ struct GuestTextureMemory {
 };
 std::mutex g_guest_textures_mutex;
 std::vector<XboxD3D12ResourceProxy*> g_guest_textures;
+std::vector<void*> g_guest_texture_write_pages;  // guarded by g_guest_textures_mutex
 std::atomic<uint64_t> g_upload_textures{0};
 std::atomic<uint64_t> g_upload_bytes{0};
 
@@ -1000,24 +1002,26 @@ void UploadGuestTextureBatch(ID3D12CommandQueue* queue,
     device->Release();
 }
 
-// Uploads every guest-memory texture the title has written to since the last call.
-void FlushGuestTextureWrites(ID3D12CommandQueue* queue) {
+// Upload CPU writes before the submission can read or overwrite the texture.
+void FlushGuestTextureWrites(ID3D12CommandQueue* queue,
+                             const std::unordered_set<ID3D12Resource*>& copy_resources,
+                             bool uses_shaders) {
     std::lock_guard<std::mutex> lock(g_guest_textures_mutex);
-    if (g_guest_textures.empty() || queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) return;
+    if (g_guest_textures.empty()) return;
     std::vector<GuestTextureUpload> uploads;
-    std::vector<void*> pages;
+    auto& pages = g_guest_texture_write_pages;
     std::vector<UINT> dirty;
     for (XboxD3D12ResourceProxy* tex : g_guest_textures) {
+        if (!uses_shaders && !copy_resources.contains(tex->pc_res)) continue;
         GuestTextureMemory& mem = *tex->guest_memory;
-        pages.resize(mem.size / 4096 + 1);
-        ULONG_PTR count = pages.size();
+        ULONG_PTR count = mem.size / 4096 + 1;
+        if (pages.size() < count) pages.resize(count);
         DWORD granularity = 0;
         // Reading resets the watch: a write that lands during the copy is picked up next time.
         if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, mem.base, mem.size, pages.data(), &count, &granularity) != 0 ||
             count == 0) {
             continue;
         }
-        pages.resize(count);
         // Only the subresources the title wrote to: the others may hold data
         // that arrived through command-list copies.
         const D3D12_RESOURCE_DESC d = tex->pc_res->GetDesc();
@@ -1028,7 +1032,7 @@ void FlushGuestTextureWrites(ID3D12CommandQueue* queue) {
                 continue;
             }
             const auto* first = static_cast<const uint8_t*>(mem.base) + offset;
-            const bool written = std::any_of(pages.begin(), pages.end(), [&](void* page) {
+            const bool written = std::any_of(pages.begin(), pages.begin() + count, [&](void* page) {
                 const auto* p = static_cast<const uint8_t*>(page);
                 return p + granularity > first && p < first + size;
             });
@@ -1159,6 +1163,8 @@ struct XboxD3D12GraphicsCommandListProxy {
     ID3D12Resource* scratch_buf = nullptr;
     uint64_t scratch_size = 0;
     std::vector<ID3D12Resource*> retired_scratch;
+    std::vector<ID3D12Resource*> texture_copy_resources;
+    bool uses_shaders = false;
 #endif
 };
 intptr_t SCARLETTX_GDK_CALLBACK CmdListQueryInterface(void* self, uintptr_t, uintptr_t ppv, uintptr_t) {
@@ -1227,6 +1233,10 @@ intptr_t SCARLETTX_GDK_CALLBACK CmdListReset(void* self, uintptr_t pAlloc, uintp
         pc_pso = reinterpret_cast<ID3D12PipelineState*>(pso_proxy->pc_obj);
     }
     const HRESULT hr = obj->pc_list->Reset(alloc_proxy->pc_alloc, pc_pso);
+    if (SUCCEEDED(hr)) {
+        obj->texture_copy_resources.clear();
+        obj->uses_shaders = false;
+    }
     if (TraceEnabled()) {
         std::cerr << "[ScarlettX][d3d12_xs] CmdList::Reset(self=" << self << ", alloc=" << alloc_proxy
                   << ", pso=" << reinterpret_cast<void*>(pPso) << ") -> 0x"
@@ -1360,6 +1370,8 @@ intptr_t SCARLETTX_GDK_CALLBACK CmdListCopyTextureRegion(
     if (dst.pResource) dst.pResource = reinterpret_cast<XboxD3D12ResourceProxy*>(dst.pResource)->pc_res;
     if (src.pResource) src.pResource = reinterpret_cast<XboxD3D12ResourceProxy*>(src.pResource)->pc_res;
     if (dst.pResource && src.pResource) {
+        obj->texture_copy_resources.push_back(dst.pResource);
+        obj->texture_copy_resources.push_back(src.pResource);
         if (src.Type == D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT &&
             (src.PlacedFootprint.Offset & 511ULL) != 0 && obj->pc_device) {
             const auto& fp = src.PlacedFootprint;
@@ -1450,8 +1462,6 @@ std::atomic<uint64_t> g_set_vp_count{0};
 std::atomic<uint64_t> g_submit_count{0};
 std::atomic<uint64_t> g_flush_count{0};
 std::atomic<uint64_t> g_flush_us{0};
-std::atomic<uint64_t> g_frame_epoch{0};
-std::atomic<uint64_t> g_flushed_epoch{~0ull};
 
 bool StatsEnabled() {
     static const bool enabled = []() {
@@ -1524,6 +1534,7 @@ intptr_t SCARLETTX_GDK_CALLBACK CmdListDrawInstanced(
 #if defined(_WIN32)
     auto* obj = static_cast<XboxD3D12GraphicsCommandListProxy*>(self);
     if (obj->pc_list) {
+        obj->uses_shaders = true;
         obj->pc_list->DrawInstanced(static_cast<UINT>(vCount), static_cast<UINT>(iCount),
                                     static_cast<UINT>(startV), static_cast<UINT>(startI));
     }
@@ -1557,6 +1568,7 @@ intptr_t SCARLETTX_GDK_CALLBACK CmdListDrawIndexedInstanced(
         }
     }
     if (obj->pc_list) {
+        obj->uses_shaders = true;
         obj->pc_list->DrawIndexedInstanced(static_cast<UINT>(idxCount), static_cast<UINT>(instCount),
                                            static_cast<UINT>(startIdx), static_cast<INT>(baseVertex),
                                            static_cast<UINT>(startInst));
@@ -1568,6 +1580,7 @@ intptr_t SCARLETTX_GDK_CALLBACK CmdListDispatch(void* self, uintptr_t x, uintptr
 #if defined(_WIN32)
     auto* obj = static_cast<XboxD3D12GraphicsCommandListProxy*>(self);
     if (obj->pc_list) {
+        obj->uses_shaders = true;
         obj->pc_list->Dispatch(static_cast<UINT>(x), static_cast<UINT>(y), static_cast<UINT>(z));
     }
 #endif
@@ -1580,6 +1593,8 @@ intptr_t SCARLETTX_GDK_CALLBACK CmdListCopyResource(void* self, uintptr_t pDst, 
         auto* dst = reinterpret_cast<XboxD3D12ResourceProxy*>(pDst);
         auto* src = reinterpret_cast<XboxD3D12ResourceProxy*>(pSrc);
         if (dst->pc_res && src->pc_res) {
+            obj->texture_copy_resources.push_back(dst->pc_res);
+            obj->texture_copy_resources.push_back(src->pc_res);
             obj->pc_list->CopyResource(dst->pc_res, src->pc_res);
         }
     }
@@ -2115,9 +2130,19 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyExecuteCommandLists(
     auto** guest_lists = reinterpret_cast<XboxD3D12GraphicsCommandListProxy**>(ppLists);
     std::vector<ID3D12CommandList*> pc_lists;
     pc_lists.reserve(num);
+    const bool direct_queue = obj->pc_queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT;
+    std::unordered_set<ID3D12Resource*> copy_resources;
+    bool uses_shaders = false;
     for (uintptr_t i = 0; i < num; ++i) {
-        if (guest_lists[i] && guest_lists[i]->pc_list) {
-            pc_lists.push_back(guest_lists[i]->pc_list);
+        const auto* guest_list = guest_lists[i];
+        if (!guest_list || !guest_list->pc_list) continue;
+        pc_lists.push_back(guest_list->pc_list);
+        if (direct_queue && !uses_shaders) {
+            uses_shaders = guest_list->uses_shaders;
+            if (!uses_shaders) {
+                copy_resources.insert(guest_list->texture_copy_resources.begin(),
+                                      guest_list->texture_copy_resources.end());
+            }
         }
     }
     if (!pc_lists.empty()) {
@@ -2126,21 +2151,25 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyExecuteCommandLists(
             std::cerr << "[ScarlettX][d3d12_xs] Queue::ExecuteCommandLists(q=" << self
                       << ", count=" << pc_lists.size() << ")\n";
         }
-        // Flush dirty guest textures once per presented frame, before the first
-        // submit of the frame. Every-submit flushing rescanned every texture
-        // for every command list the title queued.
-        const uint64_t epoch = g_frame_epoch.load(std::memory_order_relaxed);
-        if (g_flushed_epoch.load(std::memory_order_relaxed) != epoch) {
+        // Check before each direct submit that uses textures. Copy operands are
+        // explicit; draws and dispatches can access textures through descriptors.
+        if (direct_queue && (uses_shaders || !copy_resources.empty())) {
             LARGE_INTEGER freq{}, start{}, end{};
-            QueryPerformanceFrequency(&freq);
-            QueryPerformanceCounter(&start);
-            FlushGuestTextureWrites(obj->pc_queue);
-            QueryPerformanceCounter(&end);
-            g_flush_us.fetch_add(static_cast<uint64_t>(
-                                     (end.QuadPart - start.QuadPart) * 1000000ll / freq.QuadPart),
-                                 std::memory_order_relaxed);
-            g_flush_count.fetch_add(1, std::memory_order_relaxed);
-            g_flushed_epoch.store(epoch, std::memory_order_relaxed);
+            const bool record_stats = StatsEnabled();
+            if (record_stats) {
+                QueryPerformanceFrequency(&freq);
+                QueryPerformanceCounter(&start);
+            }
+
+            FlushGuestTextureWrites(obj->pc_queue, copy_resources, uses_shaders);
+
+            if (record_stats) {
+                QueryPerformanceCounter(&end);
+                g_flush_us.fetch_add(static_cast<uint64_t>(
+                                         (end.QuadPart - start.QuadPart) * 1000000ll / freq.QuadPart),
+                                     std::memory_order_relaxed);
+                g_flush_count.fetch_add(1, std::memory_order_relaxed);
+            }
         }
         obj->pc_queue->ExecuteCommandLists(static_cast<UINT>(pc_lists.size()), pc_lists.data());
     }
@@ -2523,7 +2552,6 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
     void* self, uintptr_t planeCount, uintptr_t pPlaneParams, uintptr_t pPresentParams) {
     static std::atomic<uint64_t> present_count{0};
     const uint64_t n = present_count.fetch_add(1, std::memory_order_relaxed) + 1;
-    g_frame_epoch.fetch_add(1, std::memory_order_relaxed);
 #if defined(_WIN32)
     auto* obj = static_cast<XboxD3D12CommandQueueProxy*>(self);
     XboxD3D12ResourceProxy* src_proxy = nullptr;
