@@ -976,6 +976,9 @@ XGameResult XGameSaveEnumerateBlobInfo(
 // ===========================================================================
 // XMem.h
 // ===========================================================================
+// The HLE cannot reproduce the console's physical memory, so the default
+// allocator is the heap: zero-filled and aligned like the C runtime's blocks
+// (16 bytes on x64), which is what guests appear to rely on.
 void* XMemAllocDefault(size_t dwSize, uint64_t /*dwAttributes*/) {
     const size_t sz = dwSize == 0 ? 16 : dwSize;
     void* ptr = std::calloc(1, sz);
@@ -999,6 +1002,10 @@ void* XMemAlloc(size_t dwSize, uint64_t dwAttributes) {
 }
 
 void XMemFree(void* lpAddress, uint64_t dwAttributes) {
+    if (!lpAddress) {
+        // Freeing nothing is a no-op, and the allocation hook is not involved.
+        return;
+    }
     XMemFreeFunction* hook = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_mem_hooks_mutex);
@@ -1040,6 +1047,10 @@ void* XMemVirtualAlloc(
     size_t size,
     uint32_t allocationType,
     uint32_t protect) {
+    if (size == 0) {
+        // A zero-size reservation is an argument error on every host.
+        return nullptr;
+    }
 #if defined(_WIN32)
     DWORD flAlloc = allocationType ? static_cast<DWORD>(allocationType)
                                    : (MEM_RESERVE | MEM_COMMIT);
@@ -1049,7 +1060,7 @@ void* XMemVirtualAlloc(
     (void)baseAddress;
     (void)allocationType;
     (void)protect;
-    return std::calloc(1, size == 0 ? 4096 : size);
+    return std::calloc(1, size);
 #endif
 }
 
@@ -1059,6 +1070,10 @@ bool XMemVirtualFree(void* address, size_t size, uint32_t freeType) {
     }
 #if defined(_WIN32)
     DWORD flFree = freeType ? static_cast<DWORD>(freeType) : MEM_RELEASE;
+    // MEM_DECOMMIT releases a range, so the size is required.
+    if (flFree != MEM_RELEASE && size == 0) {
+        return false;
+    }
     return VirtualFree(address, flFree == MEM_RELEASE ? 0 : size, flFree) != 0;
 #else
     (void)size;
@@ -1081,7 +1096,15 @@ XGameResult XThreadSetTimeSensitive(bool isTimeSensitive) {
 }
 
 void XThreadAssertNotTimeSensitive() {
-    // Non-fatal in HLE; real console triggers a debug break if time-sensitive.
+    // The console would break into the debugger; the HLE stays non-fatal but
+    // reports the misuse so a title blocking on a time-sensitive thread shows
+    // up in the log.
+    if (g_thread_time_sensitive) {
+        std::fprintf(stderr,
+                     "[ScarlettX][xgameruntime] XThreadAssertNotTimeSensitive called on a "
+                     "time-sensitive thread\n");
+        std::fflush(stderr);
+    }
 }
 
 XGameResult XGameGetXboxTitleId(uint32_t* titleId) {
