@@ -381,6 +381,13 @@ enum XPackageEnumerationScope : uint32_t {
     XPackageEnumerationScope_ThisPublisher = 2,
 };
 
+enum XPackageChunkAvailability : uint32_t {
+    XPackageChunkAvailability_Ready = 0,
+    XPackageChunkAvailability_Pending = 1,
+    XPackageChunkAvailability_Installable = 2,
+    XPackageChunkAvailability_Unavailable = 3,
+};
+
 enum XPackageChunkSelectorType : uint32_t {
     XPackageChunkSelectorType_Language = 0,
     XPackageChunkSelectorType_Tag = 1,
@@ -429,7 +436,16 @@ struct XPackageWriteStats {
     uint64_t bytesWritten;
 };
 
+struct XPackageInstallationProgress {
+    uint64_t totalBytes;
+    uint64_t installedBytes;
+    uint64_t launchBytes;
+    bool launchable;
+    bool completed;
+};
+
 typedef struct XPackageMount* XPackageMountHandle;
+typedef struct XPackageInstallationMonitor* XPackageInstallationMonitorHandle;
 
 typedef bool(SCARLETTX_GDK_CALLBACK XPackageEnumerationCallback)(
     void* context,
@@ -437,6 +453,16 @@ typedef bool(SCARLETTX_GDK_CALLBACK XPackageEnumerationCallback)(
 typedef bool(SCARLETTX_GDK_CALLBACK XPackageFeatureEnumerationCallback)(
     void* context,
     const XPackageFeature* feature);
+typedef bool(SCARLETTX_GDK_CALLBACK XPackageChunkAvailabilityCallback)(
+    void* context,
+    const XPackageChunkSelector* selector,
+    XPackageChunkAvailability availability);
+typedef void(SCARLETTX_GDK_CALLBACK XPackageInstallationProgressCallback)(
+    void* context,
+    XPackageInstallationMonitorHandle monitor);
+typedef void(SCARLETTX_GDK_CALLBACK XPackageInstalledCallback)(
+    void* context,
+    const XPackageDetails* details);
 
 // Packages and mount.
 SCARLETTX_XGR_API XGameResult XPackageEnumeratePackages(
@@ -477,6 +503,75 @@ SCARLETTX_XGR_API XGameResult XPackageEstimateDownloadSize(
     bool* shouldPresentUserConfirmation);
 SCARLETTX_XGR_API bool XPackageUninstallPackage(const char* packageIdentifier);
 SCARLETTX_XGR_API XGameResult XPackageUninstallUWPInstance(const char* packageName);
+
+// Chunks and installation.
+SCARLETTX_XGR_API XGameResult XPackageEnumerateChunkAvailability(
+    const char* packageIdentifier,
+    XPackageChunkSelectorType type,
+    void* context,
+    XPackageChunkAvailabilityCallback* callback);
+SCARLETTX_XGR_API XGameResult XPackageFindChunkAvailability(
+    const char* packageIdentifier,
+    uint32_t selectorCount,
+    XPackageChunkSelector* selectors,
+    XPackageChunkAvailability* availability);
+SCARLETTX_XGR_API XGameResult XPackageChangeChunkInstallOrder(
+    const char* packageIdentifier,
+    uint32_t selectorCount,
+    XPackageChunkSelector* selectors);
+SCARLETTX_XGR_API XGameResult XPackageInstallChunks(
+    const char* packageIdentifier,
+    uint32_t selectorCount,
+    XPackageChunkSelector* selectors,
+    uint32_t minimumUpdateIntervalMs,
+    bool suppressUserConfirmation,
+    XTaskQueueHandle queue,
+    XPackageInstallationMonitorHandle* installationMonitor);
+SCARLETTX_XGR_API XGameResult XPackageInstallChunksAsync(
+    const char* packageIdentifier,
+    uint32_t selectorCount,
+    XPackageChunkSelector* selectors,
+    uint32_t minimumUpdateIntervalMs,
+    bool suppressUserConfirmation,
+    XAsyncBlock* asyncBlock);
+SCARLETTX_XGR_API XGameResult XPackageInstallChunksResult(
+    XAsyncBlock* asyncBlock,
+    XPackageInstallationMonitorHandle* installationMonitor);
+SCARLETTX_XGR_API XGameResult XPackageUninstallChunks(
+    const char* packageIdentifier,
+    uint32_t selectorCount,
+    XPackageChunkSelector* selectors);
+SCARLETTX_XGR_API XGameResult XPackageCreateInstallationMonitor(
+    const char* packageIdentifier,
+    uint32_t selectorCount,
+    XPackageChunkSelector* selectors,
+    uint32_t minimumUpdateIntervalMs,
+    XTaskQueueHandle queue,
+    XPackageInstallationMonitorHandle* installationMonitor);
+SCARLETTX_XGR_API void XPackageCloseInstallationMonitorHandle(
+    XPackageInstallationMonitorHandle installationMonitor);
+SCARLETTX_XGR_API void XPackageGetInstallationProgress(
+    XPackageInstallationMonitorHandle installationMonitor,
+    XPackageInstallationProgress* progress);
+SCARLETTX_XGR_API bool XPackageUpdateInstallationMonitor(
+    XPackageInstallationMonitorHandle installationMonitor);
+SCARLETTX_XGR_API XGameResult XPackageRegisterInstallationProgressChanged(
+    XPackageInstallationMonitorHandle installationMonitor,
+    void* context,
+    XPackageInstallationProgressCallback* callback,
+    XTaskQueueRegistrationToken* token);
+SCARLETTX_XGR_API bool XPackageUnregisterInstallationProgressChanged(
+    XPackageInstallationMonitorHandle installationMonitor,
+    XTaskQueueRegistrationToken token,
+    bool wait);
+SCARLETTX_XGR_API XGameResult XPackageRegisterPackageInstalled(
+    XTaskQueueHandle queue,
+    void* context,
+    XPackageInstalledCallback* callback,
+    XTaskQueueRegistrationToken* token);
+SCARLETTX_XGR_API bool XPackageUnregisterPackageInstalled(
+    XTaskQueueRegistrationToken token,
+    bool wait);
 
 
 // ---------------------------------------------------------------------------

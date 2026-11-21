@@ -64,6 +64,19 @@ bool SCARLETTX_GDK_CALLBACK CollectFeatures(void* context, const XPackageFeature
     return true;
 }
 
+bool SCARLETTX_GDK_CALLBACK CollectChunkAvailability(void* context,
+                                                     const XPackageChunkSelector* /*selector*/,
+                                                     XPackageChunkAvailability /*availability*/) {
+    ++*static_cast<int*>(context);
+    return true;
+}
+
+void SCARLETTX_GDK_CALLBACK InstallationProgressChanged(void* /*context*/,
+                                                        XPackageInstallationMonitorHandle /*monitor*/) {}
+
+void SCARLETTX_GDK_CALLBACK PackageInstalled(void* /*context*/,
+                                             const XPackageDetails* /*details*/) {}
+
 }  // namespace
 
 int main() {
@@ -272,6 +285,180 @@ int main() {
 
         CHECK(XPackageUninstallUWPInstance(nullptr) == XGR_E_INVALIDARG);
         CHECK(XPackageUninstallUWPInstance("Other.Title") == kENotImpl);
+    }
+
+    // Chunk queries: every chunk of the title is installed and ready.
+    XPackageChunkSelector language{};
+    language.type = XPackageChunkSelectorType_Language;
+    language.language = "en-US";
+    {
+        XPackageChunkAvailability availability = XPackageChunkAvailability_Unavailable;
+        CHECK(XPackageFindChunkAvailability(identifier.c_str(), 1, &language, &availability) == XGR_S_OK);
+        CHECK(availability == XPackageChunkAvailability_Ready);
+        CHECK(XPackageFindChunkAvailability(identifier.c_str(), 0, nullptr, &availability) == XGR_S_OK);
+        CHECK(availability == XPackageChunkAvailability_Ready);
+
+        CHECK(XPackageFindChunkAvailability(nullptr, 1, &language, &availability) == XGR_E_INVALIDARG);
+        CHECK(XPackageFindChunkAvailability(identifier.c_str(), 1, &language, nullptr) == XGR_E_INVALIDARG);
+        CHECK(XPackageFindChunkAvailability(identifier.c_str(), 1, nullptr, &availability) == XGR_E_INVALIDARG);
+        CHECK(XPackageFindChunkAvailability("Other.Title_1.0.0.0_x64__other", 1, &language,
+                                            &availability) == XGR_E_NOTFOUND);
+
+        int chunk_callbacks = 0;
+        CHECK(XPackageEnumerateChunkAvailability(identifier.c_str(),
+                                                 XPackageChunkSelectorType_Language,
+                                                 &chunk_callbacks,
+                                                 CollectChunkAvailability) == XGR_S_OK);
+        CHECK(chunk_callbacks == 0);
+        CHECK(XPackageEnumerateChunkAvailability(identifier.c_str(),
+                                                 XPackageChunkSelectorType_Language,
+                                                 &chunk_callbacks, nullptr) == XGR_E_INVALIDARG);
+        CHECK(XPackageEnumerateChunkAvailability(identifier.c_str(),
+                                                 static_cast<XPackageChunkSelectorType>(9),
+                                                 &chunk_callbacks,
+                                                 CollectChunkAvailability) == XGR_E_INVALIDARG);
+        CHECK(XPackageEnumerateChunkAvailability("Other.Title_1.0.0.0_x64__other",
+                                                 XPackageChunkSelectorType_Tag,
+                                                 &chunk_callbacks,
+                                                 CollectChunkAvailability) == XGR_E_NOTFOUND);
+
+        CHECK(XPackageChangeChunkInstallOrder(identifier.c_str(), 1, &language) == XGR_S_OK);
+        CHECK(XPackageChangeChunkInstallOrder(identifier.c_str(), 0, nullptr) == XGR_S_OK);
+        CHECK(XPackageChangeChunkInstallOrder(nullptr, 1, &language) == XGR_E_INVALIDARG);
+        CHECK(XPackageChangeChunkInstallOrder(identifier.c_str(), 1, nullptr) == XGR_E_INVALIDARG);
+        CHECK(XPackageChangeChunkInstallOrder("Other.Title_1.0.0.0_x64__other", 1,
+                                              &language) == XGR_E_NOTFOUND);
+
+        CHECK(XPackageUninstallChunks(identifier.c_str(), 1, &language) == XGR_S_OK);
+        CHECK(XPackageUninstallChunks(identifier.c_str(), 0, nullptr) == XGR_S_OK);
+
+        // Integer-only chunk selectors are documented as E_INVALIDARG.
+        XPackageChunkSelector chunk{};
+        chunk.type = XPackageChunkSelectorType_Chunk;
+        chunk.chunkId = 3;
+        CHECK(XPackageUninstallChunks(identifier.c_str(), 1, &chunk) == XGR_E_INVALIDARG);
+        CHECK(XPackageUninstallChunks(nullptr, 1, &language) == XGR_E_INVALIDARG);
+        CHECK(XPackageUninstallChunks(identifier.c_str(), 1, nullptr) == XGR_E_INVALIDARG);
+        CHECK(XPackageUninstallChunks("Other.Title_1.0.0.0_x64__other", 1,
+                                      &language) == XGR_E_NOTFOUND);
+    }
+
+    // Installation monitors: always complete, never changing.
+    {
+        XTaskQueueHandle queue = nullptr;
+        CHECK(XTaskQueueCreate(XTaskQueueDispatchMode_ThreadPool,
+                               XTaskQueueDispatchMode_Manual,
+                               &queue) == XGR_S_OK);
+
+        XPackageInstallationMonitorHandle monitor = nullptr;
+        CHECK(XPackageCreateInstallationMonitor(identifier.c_str(), 1, &language, 1000,
+                                                queue, &monitor) == XGR_S_OK);
+        CHECK(monitor != nullptr);
+
+        XPackageInstallationProgress progress{123, 45, 6, false, false};
+        XPackageGetInstallationProgress(monitor, &progress);
+        CHECK(progress.totalBytes == 0);
+        CHECK(progress.installedBytes == 0);
+        CHECK(progress.launchBytes == 0);
+        CHECK(progress.launchable);
+        CHECK(progress.completed);
+
+        XPackageGetInstallationProgress(nullptr, &progress);
+        XPackageGetInstallationProgress(monitor, nullptr);
+        CHECK(!XPackageUpdateInstallationMonitor(monitor));
+        CHECK(!XPackageUpdateInstallationMonitor(nullptr));
+
+        XTaskQueueRegistrationToken token{};
+        CHECK(XPackageRegisterInstallationProgressChanged(monitor, nullptr,
+                                                          InstallationProgressChanged,
+                                                          &token) == XGR_S_OK);
+        CHECK(token.token != 0);
+        CHECK(XPackageUnregisterInstallationProgressChanged(monitor, token, true));
+        CHECK(!XPackageUnregisterInstallationProgressChanged(monitor, token, true));
+        CHECK(XPackageRegisterInstallationProgressChanged(nullptr, nullptr,
+                                                          InstallationProgressChanged,
+                                                          &token) == XGR_E_INVALIDARG);
+        CHECK(XPackageRegisterInstallationProgressChanged(monitor, nullptr, nullptr,
+                                                          &token) == XGR_E_INVALIDARG);
+        CHECK(XPackageRegisterInstallationProgressChanged(monitor, nullptr,
+                                                          InstallationProgressChanged,
+                                                          nullptr) == XGR_E_INVALIDARG);
+        CHECK(!XPackageUnregisterInstallationProgressChanged(nullptr, token, true));
+
+        XPackageCloseInstallationMonitorHandle(monitor);
+        XPackageCloseInstallationMonitorHandle(nullptr);
+
+        // InstallChunks hands back a monitor of the same completed state.
+        XPackageInstallationMonitorHandle installed = nullptr;
+        CHECK(XPackageInstallChunks(identifier.c_str(), 0, nullptr, 0, true, queue,
+                                    &installed) == XGR_S_OK);
+        CHECK(installed != nullptr);
+        XPackageGetInstallationProgress(installed, &progress);
+        CHECK(progress.completed);
+        XPackageCloseInstallationMonitorHandle(installed);
+
+        CHECK(XPackageInstallChunks(nullptr, 0, nullptr, 0, true, queue,
+                                    &installed) == XGR_E_INVALIDARG);
+        CHECK(XPackageInstallChunks(identifier.c_str(), 1, nullptr, 0, true, queue,
+                                    &installed) == XGR_E_INVALIDARG);
+        CHECK(XPackageInstallChunks(identifier.c_str(), 0, nullptr, 0, true, queue,
+                                    nullptr) == XGR_E_INVALIDARG);
+        CHECK(XPackageInstallChunks("Other.Title_1.0.0.0_x64__other", 0, nullptr, 0, true,
+                                    queue, &installed) == XGR_E_NOTFOUND);
+        CHECK(XPackageCreateInstallationMonitor(nullptr, 0, nullptr, 0, queue,
+                                                &installed) == XGR_E_INVALIDARG);
+        CHECK(XPackageCreateInstallationMonitor("Other.Title_1.0.0.0_x64__other", 0, nullptr,
+                                                0, queue, &installed) == XGR_E_NOTFOUND);
+
+        // The asynchronous pair behaves the same way.
+        XAsyncBlock install_async{};
+        install_async.queue = queue;
+        CHECK(XPackageInstallChunksAsync(identifier.c_str(), 0, nullptr, 0, true,
+                                         &install_async) == XGR_S_OK);
+        XPackageInstallationMonitorHandle async_monitor = nullptr;
+        CHECK(XPackageInstallChunksResult(&install_async, &async_monitor) == XGR_S_OK);
+        CHECK(async_monitor != nullptr);
+        XPackageGetInstallationProgress(async_monitor, &progress);
+        CHECK(progress.completed);
+        XPackageCloseInstallationMonitorHandle(async_monitor);
+
+        CHECK(XPackageInstallChunksAsync(nullptr, 0, nullptr, 0, true,
+                                         &install_async) == XGR_E_INVALIDARG);
+        CHECK(XPackageInstallChunksAsync(identifier.c_str(), 1, nullptr, 0, true,
+                                         &install_async) == XGR_E_INVALIDARG);
+        CHECK(XPackageInstallChunksAsync(identifier.c_str(), 0, nullptr, 0, true,
+                                         nullptr) == XGR_E_INVALIDARG);
+        CHECK(XPackageInstallChunksAsync("Other.Title_1.0.0.0_x64__other", 0, nullptr, 0, true,
+                                         &install_async) == XGR_E_NOTFOUND);
+        CHECK(XPackageInstallChunksResult(nullptr, &async_monitor) == XGR_E_INVALIDARG);
+        CHECK(XPackageInstallChunksResult(&install_async, nullptr) == XGR_E_INVALIDARG);
+
+        XTaskQueueTerminate(queue, true, nullptr, nullptr);
+        XTaskQueueCloseHandle(queue);
+    }
+
+    // Package-installed notifications: tokens are issued and accepted back.
+    {
+        XTaskQueueRegistrationToken token{};
+        CHECK(XPackageRegisterPackageInstalled(nullptr, nullptr, PackageInstalled,
+                                               &token) == XGR_S_OK);
+        CHECK(token.token != 0);
+        CHECK(XPackageUnregisterPackageInstalled(token, false));
+        CHECK(!XPackageUnregisterPackageInstalled(token, false));
+
+        XTaskQueueRegistrationToken other{};
+        CHECK(XPackageRegisterPackageInstalled(nullptr, nullptr, PackageInstalled,
+                                               &other) == XGR_S_OK);
+        CHECK(other.token != 0);
+        CHECK(other.token != token.token);
+        CHECK(XPackageUnregisterPackageInstalled(other, true));
+
+        CHECK(XPackageRegisterPackageInstalled(nullptr, nullptr, nullptr,
+                                               &token) == XGR_E_INVALIDARG);
+        CHECK(XPackageRegisterPackageInstalled(nullptr, nullptr, PackageInstalled,
+                                               nullptr) == XGR_E_INVALIDARG);
+        XTaskQueueRegistrationToken zero{};
+        CHECK(!XPackageUnregisterPackageInstalled(zero, true));
     }
 
     std::cout << "[test_xpackage] all checks passed\n";

@@ -33,7 +33,6 @@ bool TraceEnabled() {
     return enabled;
 }
 
-// Keep in sync with XPackageGetCurrentProcessPackageIdentifier.
 std::string CurrentPackageIdentifier() {
     const char* env = std::getenv("SCARLETTX_PACKAGE_IDENTIFIER");
     return (env && *env) ? env : "ScarlettX.Title_1.0.0.0_x64__scarlettx";
@@ -88,6 +87,7 @@ bool IsValidSelectorType(XPackageChunkSelectorType type) {
 }
 
 constexpr uint32_t kMountMagic = 0x58504D54;    // 'XPMT'
+constexpr uint32_t kMonitorMagic = 0x5850494D;  // 'XPIM'
 
 // Registration tokens handed to the guest. Nothing ever fires, so the token is
 // only an identity: the matching unregister accepts it exactly once.
@@ -108,6 +108,26 @@ struct XPackageMount {
     std::string path;
 };
 using MountObject = struct XPackageMount;
+
+// Installation monitor: a snapshot that is always complete and never changes.
+struct XPackageInstallationMonitor {
+    uint32_t magic = kMonitorMagic;
+    std::mutex mutex;
+    std::unordered_set<uint64_t> tokens;
+};
+using MonitorObject = struct XPackageInstallationMonitor;
+
+namespace {
+
+bool ValidMonitor(XPackageInstallationMonitorHandle monitor) {
+    return monitor && monitor->magic == kMonitorMagic;
+}
+
+XPackageInstallationMonitorHandle NewInstallationMonitor() {
+    return new (std::nothrow) MonitorObject();
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Package identity and locale
@@ -323,4 +343,239 @@ XGameResult XPackageMountWithUiResult(XAsyncBlock* async, XPackageMountHandle* m
     *mount = static_cast<XPackageMountHandle>(state->result_handle);
     xgr::ReleaseHleAsyncResult(async);
     return XGR_S_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Chunks and installation
+// ---------------------------------------------------------------------------
+// Every chunk of the title is installed: availability queries answer Ready,
+// installs are already complete and no monitor ever reports a change.
+XGameResult XPackageEnumerateChunkAvailability(
+    const char* packageIdentifier,
+    XPackageChunkSelectorType type,
+    void* /*context*/,
+    XPackageChunkAvailabilityCallback* callback) {
+    if (!packageIdentifier || !callback) {
+        return XGR_E_INVALIDARG;
+    }
+    if (!IsValidSelectorType(type)) {
+        return XGR_E_INVALIDARG;
+    }
+    if (!IsCurrentPackage(packageIdentifier)) {
+        return XGR_E_NOTFOUND;
+    }
+    // A single-chunk installation has no per-language, per-tag or per-feature
+    // entries to report.
+    return XGR_S_OK;
+}
+
+XGameResult XPackageFindChunkAvailability(
+    const char* packageIdentifier,
+    uint32_t selectorCount,
+    XPackageChunkSelector* selectors,
+    XPackageChunkAvailability* availability) {
+    if (!packageIdentifier || !availability || (selectorCount > 0 && !selectors)) {
+        return XGR_E_INVALIDARG;
+    }
+    if (!IsCurrentPackage(packageIdentifier)) {
+        return XGR_E_NOTFOUND;
+    }
+    *availability = XPackageChunkAvailability_Ready;
+    return XGR_S_OK;
+}
+
+XGameResult XPackageChangeChunkInstallOrder(
+    const char* packageIdentifier,
+    uint32_t selectorCount,
+    XPackageChunkSelector* selectors) {
+    if (!packageIdentifier || (selectorCount > 0 && !selectors)) {
+        return XGR_E_INVALIDARG;
+    }
+    if (!IsCurrentPackage(packageIdentifier)) {
+        return XGR_E_NOTFOUND;
+    }
+    // There is no pending installation whose order could be changed.
+    return XGR_S_OK;
+}
+
+XGameResult XPackageUninstallChunks(
+    const char* packageIdentifier,
+    uint32_t selectorCount,
+    XPackageChunkSelector* selectors) {
+    if (!packageIdentifier || (selectorCount > 0 && !selectors)) {
+        return XGR_E_INVALIDARG;
+    }
+    if (!IsCurrentPackage(packageIdentifier)) {
+        return XGR_E_NOTFOUND;
+    }
+    // Using only the integer chunk ID is documented as E_INVALIDARG.
+    for (uint32_t i = 0; i < selectorCount; ++i) {
+        if (selectors[i].type == XPackageChunkSelectorType_Chunk) {
+            return XGR_E_INVALIDARG;
+        }
+    }
+    return XGR_S_OK;
+}
+
+XGameResult XPackageCreateInstallationMonitor(
+    const char* packageIdentifier,
+    uint32_t selectorCount,
+    XPackageChunkSelector* selectors,
+    uint32_t /*minimumUpdateIntervalMs*/,
+    XTaskQueueHandle /*queue*/,
+    XPackageInstallationMonitorHandle* installationMonitor) {
+    if (!packageIdentifier || !installationMonitor ||
+        (selectorCount > 0 && !selectors)) {
+        return XGR_E_INVALIDARG;
+    }
+    *installationMonitor = nullptr;
+    if (!IsCurrentPackage(packageIdentifier)) {
+        return XGR_E_NOTFOUND;
+    }
+    auto* monitor = NewInstallationMonitor();
+    if (!monitor) {
+        return XGR_E_OUTOFMEMORY;
+    }
+    *installationMonitor = monitor;
+    return XGR_S_OK;
+}
+
+XGameResult XPackageInstallChunks(
+    const char* packageIdentifier,
+    uint32_t selectorCount,
+    XPackageChunkSelector* selectors,
+    uint32_t minimumUpdateIntervalMs,
+    bool /*suppressUserConfirmation*/,
+    XTaskQueueHandle queue,
+    XPackageInstallationMonitorHandle* installationMonitor) {
+    return XPackageCreateInstallationMonitor(packageIdentifier, selectorCount, selectors,
+                                             minimumUpdateIntervalMs, queue,
+                                             installationMonitor);
+}
+
+XGameResult XPackageInstallChunksAsync(
+    const char* packageIdentifier,
+    uint32_t selectorCount,
+    XPackageChunkSelector* selectors,
+    uint32_t /*minimumUpdateIntervalMs*/,
+    bool /*suppressUserConfirmation*/,
+    XAsyncBlock* asyncBlock) {
+    if (!packageIdentifier || !asyncBlock || (selectorCount > 0 && !selectors)) {
+        return XGR_E_INVALIDARG;
+    }
+    if (!IsCurrentPackage(packageIdentifier)) {
+        return XGR_E_NOTFOUND;
+    }
+    return xgr::BeginHleAsync(asyncBlock, [](xgr::HleAsyncState* state) {
+        auto* monitor = NewInstallationMonitor();
+        if (!monitor) {
+            xgr::CompleteHleAsync(state, XGR_E_OUTOFMEMORY, 0);
+            return;
+        }
+        state->result_handle = monitor;
+        xgr::CompleteHleAsync(state, XGR_S_OK, sizeof(XPackageInstallationMonitorHandle));
+    });
+}
+
+XGameResult XPackageInstallChunksResult(
+    XAsyncBlock* asyncBlock,
+    XPackageInstallationMonitorHandle* installationMonitor) {
+    if (!asyncBlock || !installationMonitor) {
+        return XGR_E_INVALIDARG;
+    }
+    const XGameResult hr = XAsyncGetStatus(asyncBlock, true);
+    if (hr != XGR_S_OK) {
+        *installationMonitor = nullptr;
+        return hr;
+    }
+    auto state = xgr::GetHleAsyncState(asyncBlock);
+    if (!state || !state->result_handle) {
+        *installationMonitor = nullptr;
+        return XGR_E_FAIL;
+    }
+    *installationMonitor = static_cast<XPackageInstallationMonitorHandle>(state->result_handle);
+    xgr::ReleaseHleAsyncResult(asyncBlock);
+    return XGR_S_OK;
+}
+
+void XPackageCloseInstallationMonitorHandle(
+    XPackageInstallationMonitorHandle installationMonitor) {
+    if (!installationMonitor) {
+        return;
+    }
+    if (installationMonitor->magic == kMonitorMagic) {
+        installationMonitor->magic = 0;
+        delete installationMonitor;
+    }
+}
+
+void XPackageGetInstallationProgress(
+    XPackageInstallationMonitorHandle installationMonitor,
+    XPackageInstallationProgress* progress) {
+    if (!ValidMonitor(installationMonitor) || !progress) {
+        return;
+    }
+    // Nothing is left to install, so the installation is complete and launchable.
+    *progress = XPackageInstallationProgress{};
+    progress->launchable = true;
+    progress->completed = true;
+}
+
+bool XPackageUpdateInstallationMonitor(XPackageInstallationMonitorHandle installationMonitor) {
+    if (!ValidMonitor(installationMonitor)) {
+        return false;
+    }
+    // The snapshot never changes, so there is never an update to report.
+    return false;
+}
+
+XGameResult XPackageRegisterInstallationProgressChanged(
+    XPackageInstallationMonitorHandle installationMonitor,
+    void* /*context*/,
+    XPackageInstallationProgressCallback* callback,
+    XTaskQueueRegistrationToken* token) {
+    if (!ValidMonitor(installationMonitor) || !callback || !token) {
+        return XGR_E_INVALIDARG;
+    }
+    std::lock_guard<std::mutex> lock(installationMonitor->mutex);
+    token->token = 0;
+    {
+        std::lock_guard<std::mutex> registry_lock(g_registration_mutex);
+        token->token = NextRegistrationTokenLocked();
+    }
+    installationMonitor->tokens.insert(token->token);
+    return XGR_S_OK;
+}
+
+bool XPackageUnregisterInstallationProgressChanged(
+    XPackageInstallationMonitorHandle installationMonitor,
+    XTaskQueueRegistrationToken token,
+    bool /*wait*/) {
+    if (!ValidMonitor(installationMonitor)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(installationMonitor->mutex);
+    // No callback is ever pending, so unregistration never has to wait.
+    return installationMonitor->tokens.erase(token.token) > 0;
+}
+
+XGameResult XPackageRegisterPackageInstalled(
+    XTaskQueueHandle /*queue*/,
+    void* /*context*/,
+    XPackageInstalledCallback* callback,
+    XTaskQueueRegistrationToken* token) {
+    if (!callback || !token) {
+        return XGR_E_INVALIDARG;
+    }
+    // Nothing is ever installed while the title runs, so the callback is only
+    // recorded in order to be accepted back by the unregister call.
+    std::lock_guard<std::mutex> lock(g_registration_mutex);
+    token->token = NextRegistrationTokenLocked();
+    g_package_installed_tokens.insert(token->token);
+    return XGR_S_OK;
+}
+
+bool XPackageUnregisterPackageInstalled(XTaskQueueRegistrationToken token, bool /*wait*/) {
+    std::lock_guard<std::mutex> lock(g_registration_mutex);
+    return g_package_installed_tokens.erase(token.token) > 0;
 }
