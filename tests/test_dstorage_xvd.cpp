@@ -1,7 +1,10 @@
 #include <atomic>
+#include <array>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -36,6 +39,106 @@ namespace {
 void OnSignal(uint64_t value, void* ctx) {
     auto* flag = static_cast<std::atomic<uint64_t>*>(ctx);
     flag->store(value, std::memory_order_release);
+}
+
+struct SignalGate {
+    uint64_t queue;
+    uint64_t status_arr;
+    std::promise<void> entered;
+    std::shared_future<void> released;
+    int32_t reentrant_result = 0;
+};
+
+void HoldSignal(uint64_t, void* ctx) {
+    auto& gate = *static_cast<SignalGate*>(ctx);
+    gate.entered.set_value();
+    gate.released.wait();
+    gate.reentrant_result = DStorageEnqueueStatus(gate.queue, gate.status_arr, 5);
+}
+
+int TestQueueSubmission(uint64_t factory) {
+    using namespace std::chrono_literals;
+
+    DSTORAGE_QUEUE_DESC desc{};
+    desc.SourceType = DSTORAGE_REQUEST_SOURCE_MEMORY;
+    desc.Capacity = 4;
+    desc.Priority = DSTORAGE_PRIORITY_REALTIME;
+    uint64_t queue = 0;
+    SX_CHECK_EQ(DStorageCreateQueue(factory, &desc, &queue), 0);
+    uint64_t status_arr = 0;
+    SX_CHECK_EQ(DStorageCreateStatusArray(factory, 6, "QueueSubmission", &status_arr), 0);
+
+    const std::array<uint8_t, 3> source{7, 11, 23};
+    std::array<uint8_t, 3> destination{};
+    DSTORAGE_REQUEST read{};
+    read.SourceType = DSTORAGE_REQUEST_SOURCE_MEMORY;
+    read.DestinationType = DSTORAGE_REQUEST_DESTINATION_MEMORY;
+    read.SourceSize = 1;
+    read.DestinationSize = 1;
+    const auto enqueue_read = [&](size_t i) {
+        read.SourceMemory = &source[i];
+        read.DestinationMemory = &destination[i];
+        return DStorageEnqueueRequest(queue, &read);
+    };
+
+    SX_CHECK_EQ(enqueue_read(0), 0);
+    SX_CHECK_EQ(DStorageWaitForIdle(queue, 5000), 0);
+    SX_CHECK_EQ(destination[0], 0);
+    SX_CHECK_EQ(DStorageEnqueueStatus(queue, status_arr, 0), 0);
+    SX_CHECK_EQ(DStorageWaitForIdle(queue, 5000), 0);
+    SX_CHECK_EQ(DStorageIsStatusComplete(status_arr, 0), 1u);
+    SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 0), 0);
+    SX_CHECK_EQ(destination[0], source[0]);
+
+    uint64_t fence = 0;
+    SX_CHECK_EQ(enqueue_read(1), 0);
+    SX_CHECK_EQ(DStorageEnqueueSignal(queue, &fence, 9, nullptr, nullptr), 0);
+    SX_CHECK_EQ(DStorageWaitForIdle(queue, 5000), 0);
+    SX_CHECK_EQ(fence, 9u);
+    SX_CHECK_EQ(destination[1], source[1]);
+
+    SX_CHECK_EQ(DStorageEnqueueStatus(queue, status_arr, 1), 0);
+    SX_CHECK_EQ(enqueue_read(2), 0);
+    SX_CHECK_EQ(DStorageWaitForIdle(queue, 5000), 0);
+    SX_CHECK_EQ(DStorageIsStatusComplete(status_arr, 1), 1u);
+    SX_CHECK(destination == source);
+
+    std::promise<void> release;
+    SignalGate gate{queue, status_arr, {}, release.get_future().share()};
+    auto entered = gate.entered.get_future();
+    SX_CHECK_EQ(DStorageEnqueueSignal(queue, nullptr, 0, HoldSignal, &gate), 0);
+    const int submit = DStorageSubmit(queue);
+    if (submit != 0 || entered.wait_for(5s) != std::future_status::ready) {
+        release.set_value();
+        DStorageDestroyQueue(queue);
+        SX_CHECK(false);
+    }
+    const int first = DStorageEnqueueStatus(queue, status_arr, 2);
+    const int second = DStorageEnqueueStatus(queue, status_arr, 3);
+    const int third = DStorageEnqueueStatus(queue, status_arr, 4);
+    std::promise<void> producer_started;
+    auto started = producer_started.get_future();
+    auto producer = std::async(std::launch::async, [&] {
+        producer_started.set_value();
+        return DStorageEnqueueStatus(queue, status_arr, 5);
+    });
+    const bool producer_waited = started.wait_for(5s) == std::future_status::ready &&
+                                 producer.wait_for(50ms) == std::future_status::timeout;
+    release.set_value();
+    const int producer_result = producer.get();
+    const int drained = DStorageWaitForIdle(queue, 5000);
+    const uint32_t last_status = DStorageIsStatusComplete(status_arr, 5);
+    SX_CHECK_EQ(DStorageDestroyQueue(queue), 0);
+    SX_CHECK_EQ(DStorageDestroyStatusArray(status_arr), 0);
+    SX_CHECK_EQ(first, 0);
+    SX_CHECK_EQ(second, 0);
+    SX_CHECK_EQ(third, 0);
+    SX_CHECK(producer_waited);
+    SX_CHECK_EQ(gate.reentrant_result, static_cast<int32_t>(0x80004005u));
+    SX_CHECK_EQ(producer_result, 0);
+    SX_CHECK_EQ(drained, 0);
+    SX_CHECK_EQ(last_status, 1u);
+    return 0;
 }
 
 }  // namespace
@@ -83,6 +186,7 @@ int main() {
     uint64_t factory = 0;
     SX_CHECK_EQ(DStorageGetFactory(&factory), 0);
     SX_CHECK(factory != 0);
+    SX_CHECK_EQ(TestQueueSubmission(factory), 0);
 
     DSTORAGE_QUEUE_DESC qdesc{};
     qdesc.SourceType = DSTORAGE_REQUEST_SOURCE_FILE;
