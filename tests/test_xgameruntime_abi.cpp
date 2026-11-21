@@ -1,11 +1,17 @@
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#  include <windows.h>
+#endif
 
 #include "scarlettx/gdk/xgameruntime_abi.h"
 
@@ -308,27 +314,82 @@ int main() {
     XGameSaveCloseProvider(provider);
 
     // 7. XMem hooks & VirtualAlloc
-    XMemAllocFunction* orig_alloc = nullptr;
-    XMemFreeFunction* orig_free = nullptr;
-    CHECK(XMemGetAllocationHooks(&orig_alloc, &orig_free) == XGR_S_OK);
-    CHECK(orig_alloc != nullptr && orig_free != nullptr);
+    {
+        XMemAllocFunction* orig_alloc = nullptr;
+        XMemFreeFunction* orig_free = nullptr;
+        CHECK(XMemGetAllocationHooks(&orig_alloc, &orig_free) == XGR_S_OK);
+        CHECK(orig_alloc != nullptr && orig_free != nullptr);
+        CHECK(XMemGetAllocationHooks(nullptr, &orig_free) == XGR_E_POINTER);
+        CHECK(XMemGetAllocationHooks(&orig_alloc, nullptr) == XGR_E_POINTER);
 
-    CHECK(XMemSetAllocationHooks(CustomAlloc, CustomFree) == XGR_S_OK);
-    void* mem = XMemAlloc(256, 0);
-    CHECK(mem != nullptr);
-    XMemFree(mem, 0);
-    CHECK(g_custom_allocs.load() == 1 && g_custom_frees.load() == 1);
-    CHECK(XMemSetAllocationHooks(nullptr, nullptr) == XGR_S_OK);
+        // Half a hook pair is an argument error and leaves the current pair alone.
+        CHECK(XMemSetAllocationHooks(CustomAlloc, nullptr) == XGR_E_INVALIDARG);
+        CHECK(XMemSetAllocationHooks(nullptr, CustomFree) == XGR_E_INVALIDARG);
 
-    void* vmem = XMemVirtualAlloc(nullptr, 65536, 0, 0);
-    CHECK(vmem != nullptr);
-    std::memset(vmem, 0xAB, 4096);
-    CHECK(XMemVirtualFree(vmem, 0, 0) == true);
+        // The default allocator hands back zero-filled, 16-byte aligned blocks.
+        void* plain = XMemAlloc(256, 0);
+        CHECK(plain != nullptr);
+        CHECK(reinterpret_cast<std::uintptr_t>(plain) % 16 == 0);
+        bool zero_filled = true;
+        for (size_t i = 0; i < 256; ++i) {
+            if (static_cast<unsigned char*>(plain)[i] != 0) {
+                zero_filled = false;
+                break;
+            }
+        }
+        CHECK(zero_filled);
+        XMemFree(plain, 0);
+
+        // Freeing null is a no-op and never reaches the hook.
+        XMemFree(nullptr, 0);
+        CHECK(g_custom_frees.load() == 0);
+
+        CHECK(XMemSetAllocationHooks(CustomAlloc, CustomFree) == XGR_S_OK);
+        void* mem = XMemAlloc(256, 0);
+        CHECK(mem != nullptr);
+        XMemFree(mem, 0);
+        CHECK(g_custom_allocs.load() == 1 && g_custom_frees.load() == 1);
+        CHECK(XMemSetAllocationHooks(nullptr, nullptr) == XGR_S_OK);
+
+        // Virtual memory keeps page granularity; a zero size is an argument error.
+        CHECK(XMemVirtualAlloc(nullptr, 0, 0, 0) == nullptr);
+        CHECK(XMemVirtualFree(nullptr, 0, 0) == false);
+
+        void* vmem = XMemVirtualAlloc(nullptr, 65536, 0, 0);
+        CHECK(vmem != nullptr);
+        CHECK(reinterpret_cast<std::uintptr_t>(vmem) % 4096 == 0);
+        std::memset(vmem, 0xAB, 4096);
+        CHECK(XMemVirtualFree(vmem, 0, 0) == true);
+
+#if defined(_WIN32)
+        // Decommit needs an explicit range; releasing the reservation then works.
+        void* range = XMemVirtualAlloc(nullptr, 65536, MEM_COMMIT, PAGE_READWRITE);
+        CHECK(range != nullptr);
+        CHECK(XMemVirtualFree(range, 0, MEM_DECOMMIT) == false);
+        CHECK(XMemVirtualFree(range, 65536, MEM_DECOMMIT) == true);
+        CHECK(XMemVirtualFree(range, 0, MEM_RELEASE) == true);
+#endif
+    }
 
     // 8. XThread
     CHECK(XThreadIsTimeSensitive() == false);
     CHECK(XThreadSetTimeSensitive(true) == XGR_S_OK);
     CHECK(XThreadIsTimeSensitive() == true);
+    {
+        // The flag is per thread: a worker starts clean, and its own setting
+        // does not leak back into this thread.
+        bool worker_starts_clean = false;
+        bool worker_keeps_its_own = false;
+        std::thread worker([&worker_starts_clean, &worker_keeps_its_own]() {
+            worker_starts_clean = !XThreadIsTimeSensitive();
+            XThreadSetTimeSensitive(true);
+            worker_keeps_its_own = worker_starts_clean && XThreadIsTimeSensitive();
+        });
+        worker.join();
+        CHECK(worker_starts_clean);
+        CHECK(worker_keeps_its_own);
+        CHECK(XThreadIsTimeSensitive() == true);
+    }
     CHECK(XThreadSetTimeSensitive(false) == XGR_S_OK);
     XThreadAssertNotTimeSensitive();
 
