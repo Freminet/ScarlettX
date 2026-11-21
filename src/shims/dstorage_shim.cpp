@@ -24,7 +24,6 @@ constexpr int32_t kE_FAIL = static_cast<int32_t>(0x80004005u);
 constexpr int32_t kE_NOTIMPL = static_cast<int32_t>(0x80004001u);
 constexpr int32_t kE_HANDLE = static_cast<int32_t>(0x80070006u);
 constexpr int32_t kE_OUTOFMEMORY = static_cast<int32_t>(0x8007000Eu);
-constexpr int32_t kE_ABORT = static_cast<int32_t>(0x80004004u);
 constexpr int32_t kE_DSTORAGE_FILE_NOT_FOUND = static_cast<int32_t>(0x80070002u);
 constexpr int32_t kE_DSTORAGE_BUFFER_TOO_SMALL = static_cast<int32_t>(0x8007007Au);
 
@@ -278,7 +277,8 @@ void QueueWorkerLoop(std::shared_ptr<QueueObject> q) {
         }
 
         if (item.kind == QueueItemKind::kRequest) {
-            int32_t hr = item.cancelled ? kE_ABORT : ExecuteRequest(item.req);
+            // Cancelled requests retire in queue order without recording a failure.
+            const int32_t hr = item.cancelled ? kS_OK : ExecuteRequest(item.req);
             if (hr < 0) {
                 std::lock_guard<std::mutex> lk(q->mu);
                 if (q->error_record.FailureCount == 0) {

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <filesystem>
@@ -170,34 +171,54 @@ int main() {
     SX_CHECK_EQ(cb_val.load(), 42ull);
     SX_CHECK(std::memcmp(dst.data(), original.data(), original.size()) == 0);
 
-    // 4. Cancellation by tag + error record
-    std::vector<uint8_t> cancel_dst(64, 0xCC);
-    DSTORAGE_REQUEST cancel_req{};
-    cancel_req.SourceType = DSTORAGE_REQUEST_SOURCE_MEMORY;
-    cancel_req.DestinationType = DSTORAGE_REQUEST_DESTINATION_MEMORY;
-    cancel_req.CompressionFormat = DSTORAGE_COMPRESSION_FORMAT_NONE;
-    cancel_req.SourceMemory = original.data();
-    cancel_req.SourceSize = 64;
+    // 4. Cancellation leaves the destination untouched and reports no error.
+    constexpr uint64_t cancel_mask = 0xFFFF0000ull;
+    constexpr uint64_t cancel_value = 0xBEEF0000ull;
+    std::vector<uint8_t> cancel_dst(original.size(), 0xCC);
+    DSTORAGE_REQUEST cancel_req = req;
     cancel_req.DestinationMemory = cancel_dst.data();
-    cancel_req.DestinationSize = 64;
-    cancel_req.CancellationTag = 0xBEEF0001ull;
+    cancel_req.CancellationTag = cancel_value | 1;
     cancel_req.Name = "CancelledRead";
 
     SX_CHECK_EQ(DStorageEnqueueRequest(queue, &cancel_req), 0);
-    SX_CHECK_EQ(DStorageCancelRequestsWithTag(queue, 0xFFFF0000ull, 0xBEEF0000ull), 0);
+    SX_CHECK_EQ(DStorageCancelRequestsWithTag(queue, cancel_mask, cancel_value), 0);
+    // Requests added after the cancellation still run, even with the same tag.
+    std::fill(dst.begin(), dst.end(), 0);
+    DSTORAGE_REQUEST later_req = cancel_req;
+    later_req.DestinationMemory = dst.data();
+    later_req.Name = "ReadAfterCancellation";
+    SX_CHECK_EQ(DStorageEnqueueRequest(queue, &later_req), 0);
     SX_CHECK_EQ(DStorageEnqueueStatus(queue, status_arr, 1), 0);
     SX_CHECK_EQ(DStorageSubmit(queue), 0);
     SX_CHECK_EQ(DStorageWaitForIdle(queue, 5000), 0);
 
     SX_CHECK_EQ(DStorageIsStatusComplete(status_arr, 1), 1u);
-    SX_CHECK(DStorageGetStatusHResult(status_arr, 1) < 0);
-    SX_CHECK_EQ(cancel_dst[0], 0xCCu);
+    SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 1), 0);
+    SX_CHECK(std::all_of(cancel_dst.begin(), cancel_dst.end(), [](uint8_t byte) { return byte == 0xCC; }));
+    SX_CHECK(dst == original);
 
     DSTORAGE_ERROR_RECORD err{};
     SX_CHECK_EQ(DStorageRetrieveErrorRecord(queue, &err), 0);
+    SX_CHECK_EQ(err.FailureCount, 0u);
+
+    // 5. A cancellation must preserve an actual failure earlier in the batch.
+    DSTORAGE_REQUEST failed_req = req;
+    failed_req.SourceFileOffset = file_sz;
+    failed_req.Name = "ReadPastEof";
+    SX_CHECK_EQ(DStorageEnqueueRequest(queue, &failed_req), 0);
+    SX_CHECK_EQ(DStorageEnqueueRequest(queue, &cancel_req), 0);
+    SX_CHECK_EQ(DStorageCancelRequestsWithTag(queue, cancel_mask, cancel_value), 0);
+    SX_CHECK_EQ(DStorageEnqueueStatus(queue, status_arr, 2), 0);
+    SX_CHECK_EQ(DStorageSubmit(queue), 0);
+    SX_CHECK_EQ(DStorageWaitForIdle(queue, 5000), 0);
+
+    SX_CHECK_EQ(DStorageIsStatusComplete(status_arr, 2), 1u);
+    constexpr auto invalid_arg = static_cast<int32_t>(0x80070057u);
+    SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 2), invalid_arg);
+    SX_CHECK_EQ(DStorageRetrieveErrorRecord(queue, &err), 0);
     SX_CHECK_EQ(err.FailureCount, 1u);
-    SX_CHECK(err.FirstFailureHResult < 0);
-    SX_CHECK_EQ(std::string(err.FailedRequestName), std::string("CancelledRead"));
+    SX_CHECK_EQ(err.FirstFailureHResult, invalid_arg);
+    SX_CHECK_EQ(std::string(err.FailedRequestName), std::string("ReadPastEof"));
 
     SX_CHECK_EQ(DStorageCloseFile(xvd_file), 0);
     SX_CHECK_EQ(DStorageDestroyStatusArray(status_arr), 0);
