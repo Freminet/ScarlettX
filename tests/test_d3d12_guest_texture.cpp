@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 #include <memory>
 #include <vector>
 
@@ -45,6 +46,7 @@ constexpr int kListReset = 10;
 constexpr int kListCopyTextureRegion = 16;
 constexpr int kListResourceBarrier = 26;
 constexpr int kQueueExecuteCommandLists = 10;
+constexpr int kQueuePresentX = 30;
 constexpr int kQueueSignal = 14;
 constexpr int kFenceGetCompletedValue = 8;
 
@@ -141,9 +143,25 @@ void ReadBackAndCompare(Context& c, const std::vector<Mip>& mips, bool first_pas
     Call(c.readback, kResUnmap, uintptr_t{0}, static_cast<void*>(nullptr));
 }
 
+void WriteGuestMips(const XG_RESOURCE_LAYOUT& layout, uint8_t* memory, std::vector<Mip>& mips, uint8_t pattern) {
+    Fill(mips, pattern);
+    for (uint32_t m = 0; m < mips.size(); ++m) {
+        SX_REQUIRE(xg::CopyIntoSubresource(layout, memory, m, 0, mips[m].pixels.data(), mips[m].width * 4));
+    }
+}
+
+void PresentWithoutOutput(Context& c) {
+    // Advance the queue's guest frame boundary without opening a window.
+    SX_REQUIRE(Call(c.queue, kQueuePresentX, uintptr_t{0}, static_cast<void*>(nullptr),
+                    static_cast<void*>(nullptr)) == 0);
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    const std::string_view mode = argc == 2 ? argv[1] : "";
+    SX_REQUIRE(argc == 1 || mode == "--presented-recent" || mode == "--presented-idle");
+
     // Select the guest-facing proxies (also set by CTest for this test).
     _putenv_s("SCARLETTX_REAL_TITLE", "1");
 
@@ -213,14 +231,30 @@ int main() {
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     c.readback = CreateResource(c.device, D3D12_HEAP_TYPE_READBACK, bd, D3D12_RESOURCE_STATE_COPY_DEST);
 
-    // Write the cooked data the way a title does, then use the texture.
-    for (int pass = 0; pass < 2; ++pass) {
-        Fill(mips, static_cast<uint8_t>(pass == 0 ? 3 : 171));
-        for (uint32_t m = 0; m < kMips; ++m) {
-            SX_REQUIRE(xg::CopyIntoSubresource(*layout, memory, m, 0, mips[m].pixels.data(), mips[m].width * 4));
+    // The first submission is a control in each independently run scenario.
+    WriteGuestMips(*layout, memory, mips, 3);
+    ReadBackAndCompare(c, mips, true);
+    if (!mode.empty()) {
+        if (mode == "--presented-recent") {
+            PresentWithoutOutput(c);
+            WriteGuestMips(*layout, memory, mips, 85);
+            ReadBackAndCompare(c, mips, false);
+        } else {
+            // Queue submissions in three later frames without writing this texture.
+            for (int i = 0; i < 3; ++i) {
+                PresentWithoutOutput(c);
+                ReadBackAndCompare(c, mips, false);
+            }
         }
-        ReadBackAndCompare(c, mips, pass == 0);
+        std::printf("checking second submit in the same presented frame (%s)\n", argv[1]);
+        WriteGuestMips(*layout, memory, mips, 171);
+        ReadBackAndCompare(c, mips, false);
+        std::printf("test_d3d12_guest_texture: OK\n");
+        return 0;
     }
+
+    WriteGuestMips(*layout, memory, mips, 171);
+    ReadBackAndCompare(c, mips, false);
 
     // Mip 1 arrives through a command-list copy, then mip 0 through guest
     // memory: the upload of mip 0 must leave the copied mip alone.
