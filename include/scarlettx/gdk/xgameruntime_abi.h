@@ -502,6 +502,200 @@ SCARLETTX_XGR_API void XThreadAssertNotTimeSensitive();
 SCARLETTX_XGR_API XGameResult XGameGetXboxTitleId(uint32_t* titleId);
 
 // ---------------------------------------------------------------------------
+// XLauncher.h
+// ---------------------------------------------------------------------------
+SCARLETTX_XGR_API XGameResult XLaunchUri(XUserHandle requestingUser, const char* uri);
+
+// ---------------------------------------------------------------------------
+// XGameUI.h
+// ---------------------------------------------------------------------------
+enum XGameUiMessageDialogButton : uint32_t {
+    XGameUiMessageDialogButton_First = 0,
+    XGameUiMessageDialogButton_Second = 1,
+    XGameUiMessageDialogButton_Third = 2,
+};
+
+SCARLETTX_XGR_API XGameResult XGameUiShowMessageDialogAsync(
+    XAsyncBlock* async,
+    const char* titleText,
+    const char* contentText,
+    const char* firstButtonText,
+    const char* secondButtonText,
+    const char* thirdButtonText,
+    XGameUiMessageDialogButton defaultButton,
+    XGameUiMessageDialogButton cancelButton);
+
+SCARLETTX_XGR_API XGameResult XGameUiShowMessageDialogResult(
+    XAsyncBlock* async,
+    XGameUiMessageDialogButton* resultButton);
+
+enum XGameUiNotificationPositionHint : uint32_t {
+    XGameUiNotificationPositionHint_BottomCenter = 0,
+    XGameUiNotificationPositionHint_BottomLeft = 1,
+    XGameUiNotificationPositionHint_BottomRight = 2,
+    XGameUiNotificationPositionHint_TopCenter = 3,
+    XGameUiNotificationPositionHint_TopLeft = 4,
+    XGameUiNotificationPositionHint_TopRight = 5,
+};
+
+SCARLETTX_XGR_API XGameResult XGameUiSetNotificationPositionHint(
+    XGameUiNotificationPositionHint position);
+
+SCARLETTX_XGR_API XGameResult XGameUiShowAchievementsAsync(
+    XAsyncBlock* async,
+    XUserHandle requestingUser,
+    uint32_t titleId);
+
+SCARLETTX_XGR_API XGameResult XGameUiShowAchievementsResult(
+    XAsyncBlock* async);
+
+SCARLETTX_XGR_API XGameResult XGameUiShowPlayerProfileCardAsync(
+    XAsyncBlock* async,
+    XUserHandle requestingUser,
+    uint64_t targetPlayer);
+
+SCARLETTX_XGR_API XGameResult XGameUiShowPlayerProfileCardResult(
+    XAsyncBlock* async);
+
+SCARLETTX_XGR_API XGameResult XGameUiShowSendGameInviteAsync(
+    XAsyncBlock* async,
+    XUserHandle requestingUser,
+    const char* sessionConfigurationId,
+    const char* sessionTemplateName,
+    const char* sessionId,
+    const char* invitationText,
+    const char* customActivationContext);
+
+SCARLETTX_XGR_API XGameResult XGameUiShowSendGameInviteResult(
+    XAsyncBlock* async);
+
+SCARLETTX_XGR_API XGameResult XGameUiShowMultiplayerActivityGameInviteAsync(
+    XAsyncBlock* async,
+    XUserHandle requestingUser);
+
+SCARLETTX_XGR_API XGameResult XGameUiShowMultiplayerActivityGameInviteResult(
+    XAsyncBlock* async);
+
+SCARLETTX_XGR_API XGameResult XGameUiShowStateShareAsync(
+    XAsyncBlock* async,
+    XUserHandle requestingUser,
+    const char* linkToken);
+
+SCARLETTX_XGR_API XGameResult XGameUiShowStateShareResult(
+    XAsyncBlock* async);
+SCARLETTX_XGR_API XGameResult XGameUiShowErrorDialogAsync(
+    XAsyncBlock* async,
+    int32_t errorCode,
+    const char* context);
+SCARLETTX_XGR_API XGameResult XGameUiShowErrorDialogResult(
+    XAsyncBlock* async);
+SCARLETTX_XGR_API XGameResult XGameUiShowPlayerPickerAsync(
+    XAsyncBlock* async,
+    XUserHandle requestingUser,
+    const char* promptText,
+    uint32_t selectFromPlayersCount,
+    const uint64_t* selectFromPlayers,
+    uint32_t preSelectedPlayersCount,
+    const uint64_t* preSelectedPlayers,
+    uint32_t minSelectionCount,
+    uint32_t maxSelectionCount);
+SCARLETTX_XGR_API XGameResult XGameUiShowPlayerPickerResultCount(
+    XAsyncBlock* async,
+    uint32_t* resultPlayersCount);
+SCARLETTX_XGR_API XGameResult XGameUiShowPlayerPickerResult(
+    XAsyncBlock* async,
+    uint32_t resultPlayersCount,
+    uint64_t* resultPlayers,
+    uint32_t* resultPlayersUsed);
+
+enum XGameUiTextEntryInputScope : uint32_t {
+    XGameUiTextEntryInputScope_Default = 0,
+    XGameUiTextEntryInputScope_Url = 1,
+    XGameUiTextEntryInputScope_EmailSmtpAddress = 5,
+    XGameUiTextEntryInputScope_Number = 29,
+    XGameUiTextEntryInputScope_Password = 31,
+    XGameUiTextEntryInputScope_TelephoneNumber = 32,
+    XGameUiTextEntryInputScope_Alphanumeric = 40,
+    XGameUiTextEntryInputScope_Search = 50,
+    XGameUiTextEntryInputScope_ChatWithoutEmoji = 68,
+};
+
+SCARLETTX_XGR_API XGameResult XGameUiShowTextEntryAsync(
+    XAsyncBlock* async,
+    const char* titleText,
+    const char* descriptionText,
+    const char* defaultText,
+    XGameUiTextEntryInputScope inputScope,
+    uint32_t maxTextLength);
+SCARLETTX_XGR_API XGameResult XGameUiShowTextEntryResultSize(
+    XAsyncBlock* async,
+    uint32_t* resultTextBufferSize);
+SCARLETTX_XGR_API XGameResult XGameUiShowTextEntryResult(
+    XAsyncBlock* async,
+    uint32_t resultTextBufferSize,
+    char* resultTextBuffer,
+    uint32_t* resultTextBufferUsed);
+
+// In-game virtual keyboard (XGameUiTextEntry*). Types as published on the
+// XGameUiTextEntryOptions, XGameUiTextEntryExtents and enum pages (gdk-2610).
+enum XGameUiTextEntryPositionHint : uint32_t {
+    XGameUiTextEntryPositionHint_Bottom = 0,
+    XGameUiTextEntryPositionHint_Top = 1,
+};
+
+enum XGameUiTextEntryVisibilityFlags : uint32_t {
+    XGameUiTextEntryVisibilityFlags_Default = 0x0,
+    XGameUiTextEntryVisibilityFlags_OnlyShowCandidates = 0x1,
+};
+
+enum XGameUiTextEntryChangeTypeFlags : uint32_t {
+    XGameUiTextEntryChangeTypeFlags_None = 0x0,
+    XGameUiTextEntryChangeTypeFlags_TextChanged = 0x1,
+    XGameUiTextEntryChangeTypeFlags_Dismissed = 0x2,
+};
+
+struct XGameUiTextEntryOptions {
+    XGameUiTextEntryInputScope inputScope;
+    XGameUiTextEntryPositionHint positionHint;
+    XGameUiTextEntryVisibilityFlags visibilityflags;
+};
+
+struct XGameUiTextEntryExtents {
+    float left;
+    float top;
+    float right;
+    float bottom;
+};
+
+typedef struct XGameUiTextEntry* XGameUiTextEntryHandle;
+
+SCARLETTX_XGR_API XGameResult XGameUiTextEntryOpen(
+    const XGameUiTextEntryOptions* options,
+    uint32_t maxLength,
+    const char* initialText,
+    uint32_t initialCursorIndex,
+    XGameUiTextEntryHandle* handle);
+SCARLETTX_XGR_API XGameResult XGameUiTextEntryClose(
+    XGameUiTextEntryHandle handle);
+SCARLETTX_XGR_API XGameResult XGameUiTextEntryGetState(
+    XGameUiTextEntryHandle handle,
+    XGameUiTextEntryChangeTypeFlags* changeType,
+    uint32_t* cursorIndex,
+    uint32_t* imeClauseStartIndex,
+    uint32_t* imeClauseEndIndex,
+    uint32_t bufferSize,
+    char* buffer);
+SCARLETTX_XGR_API XGameResult XGameUiTextEntryGetExtents(
+    XGameUiTextEntryHandle handle,
+    XGameUiTextEntryExtents* extents);
+SCARLETTX_XGR_API XGameResult XGameUiTextEntryUpdatePositionHint(
+    XGameUiTextEntryHandle handle,
+    XGameUiTextEntryPositionHint positionHint);
+SCARLETTX_XGR_API XGameResult XGameUiTextEntryUpdateVisibility(
+    XGameUiTextEntryHandle handle,
+    XGameUiTextEntryVisibilityFlags visibilityFlags);
+
+// ---------------------------------------------------------------------------
 // Verified EmbeddedXvd xgameruntime.dll exports (XError + ApiImpl)
 // ---------------------------------------------------------------------------
 SCARLETTX_XGR_API void XErrorReport(XGameResult hr, const char* msg);
