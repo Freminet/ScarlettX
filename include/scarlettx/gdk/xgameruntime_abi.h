@@ -368,6 +368,117 @@ SCARLETTX_XGR_API bool XPackageIsPackagedProcess();
 SCARLETTX_XGR_API XGameResult XPackageGetCurrentProcessPackageIdentifier(size_t bufferSize, char* buffer);
 SCARLETTX_XGR_API XGameResult XPackageGetUserLocale(size_t localeSize, char* locale);
 
+// Types from the public XPackage.h reference pages (gdk-2610).
+enum XPackageKind : uint32_t {
+    XPackageKind_Game = 0,
+    XPackageKind_Content = 1,
+    XPackageKind_PublisherContent = 2,
+};
+
+enum XPackageEnumerationScope : uint32_t {
+    XPackageEnumerationScope_ThisOnly = 0,
+    XPackageEnumerationScope_ThisAndRelated = 1,
+    XPackageEnumerationScope_ThisPublisher = 2,
+};
+
+enum XPackageChunkSelectorType : uint32_t {
+    XPackageChunkSelectorType_Language = 0,
+    XPackageChunkSelectorType_Tag = 1,
+    XPackageChunkSelectorType_Chunk = 2,
+    XPackageChunkSelectorType_Feature = 3,
+};
+
+struct XPackageChunkSelector {
+    XPackageChunkSelectorType type;
+    union {
+        const char* language;
+        const char* tag;
+        const char* feature;
+        uint32_t chunkId;
+    };
+};
+
+struct XPackageDetails {
+    const char* packageIdentifier;
+    XVersion version;
+    XPackageKind kind;
+    const char* displayName;
+    const char* description;
+    const char* publisher;
+    const char* storeId;
+    bool installing;
+    uint32_t index;
+    uint32_t count;
+    bool ageRestricted;
+    const char* titleID;
+};
+
+struct XPackageFeature {
+    const char* id;
+    const char* displayName;
+    const char* tags;
+    bool hidden;
+    uint32_t storeIdCount;
+    const char** storeIds;
+};
+
+struct XPackageWriteStats {
+    uint64_t interval;
+    uint64_t budget;
+    uint64_t elapsed;
+    uint64_t bytesWritten;
+};
+
+typedef struct XPackageMount* XPackageMountHandle;
+
+typedef bool(SCARLETTX_GDK_CALLBACK XPackageEnumerationCallback)(
+    void* context,
+    const XPackageDetails* details);
+typedef bool(SCARLETTX_GDK_CALLBACK XPackageFeatureEnumerationCallback)(
+    void* context,
+    const XPackageFeature* feature);
+
+// Packages and mount.
+SCARLETTX_XGR_API XGameResult XPackageEnumeratePackages(
+    XPackageKind kind,
+    XPackageEnumerationScope scope,
+    void* context,
+    XPackageEnumerationCallback* callback);
+SCARLETTX_XGR_API XGameResult XPackageGetPackageKind(
+    const char* packageIdentifier,
+    XPackageKind* kind);
+SCARLETTX_XGR_API XGameResult XPackageMount(
+    const char* packageIdentifier,
+    XPackageMountHandle* mount);
+SCARLETTX_XGR_API XGameResult XPackageGetMountPathSize(
+    XPackageMountHandle mount,
+    size_t* pathSize);
+SCARLETTX_XGR_API XGameResult XPackageGetMountPath(
+    XPackageMountHandle mount,
+    size_t pathSize,
+    char* path);
+SCARLETTX_XGR_API void XPackageCloseMountHandle(XPackageMountHandle mount);
+SCARLETTX_XGR_API XGameResult XPackageMountWithUiAsync(
+    const char* packageIdentifier,
+    XAsyncBlock* async);
+SCARLETTX_XGR_API XGameResult XPackageMountWithUiResult(
+    XAsyncBlock* async,
+    XPackageMountHandle* mount);
+SCARLETTX_XGR_API XGameResult XPackageEnumerateFeatures(
+    const char* packageIdentifier,
+    void* context,
+    XPackageFeatureEnumerationCallback* callback);
+SCARLETTX_XGR_API XGameResult XPackageGetWriteStats(XPackageWriteStats* writeStats);
+SCARLETTX_XGR_API XGameResult XPackageEstimateDownloadSize(
+    const char* packageIdentifier,
+    uint32_t selectorCount,
+    XPackageChunkSelector* selectors,
+    uint64_t* downloadSize,
+    bool* shouldPresentUserConfirmation);
+SCARLETTX_XGR_API bool XPackageUninstallPackage(const char* packageIdentifier);
+SCARLETTX_XGR_API XGameResult XPackageUninstallUWPInstance(const char* packageName);
+
+
 // ---------------------------------------------------------------------------
 // XGameSave.h
 // ---------------------------------------------------------------------------
