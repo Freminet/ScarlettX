@@ -464,6 +464,20 @@ SCARLETTX_XGR_API XGameResult XGameSaveEnumerateBlobInfo(
     XGameSaveBlobInfoCallback* callback);
 
 // ---------------------------------------------------------------------------
+// XGameInvite.h
+// ---------------------------------------------------------------------------
+typedef void(SCARLETTX_GDK_CALLBACK XGameInviteEventCallback)(void* context, const char* inviteUri);
+
+SCARLETTX_XGR_API XGameResult XGameInviteRegisterForEvent(
+    XTaskQueueHandle queue,
+    void* context,
+    XGameInviteEventCallback* callback,
+    XTaskQueueRegistrationToken* token);
+SCARLETTX_XGR_API bool XGameInviteUnregisterForEvent(
+    XTaskQueueRegistrationToken token,
+    bool wait);
+
+// ---------------------------------------------------------------------------
 // XMem.h (GDK Memory & Unified Virtual Memory Hooks)
 // ---------------------------------------------------------------------------
 typedef void*(SCARLETTX_GDK_CALLBACK XMemAllocFunction)(
