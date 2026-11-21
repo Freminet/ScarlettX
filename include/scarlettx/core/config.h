@@ -15,6 +15,7 @@ struct EmulatorConfig {
     bool stats = false;
     bool in_process = false;
     bool force_relocate = false;
+    bool dump_imports = false;  // print stub calls and dynamic lookups after the run
     uint32_t render_width = 320;
     uint32_t render_height = 240;
     uint32_t max_frames = 0;  // 0 = unlimited / controlled by guest

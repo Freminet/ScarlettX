@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "scarlettx/core/status.h"
 
@@ -29,6 +30,22 @@ Status AttachTls(uint8_t* image_base, const void* tls_directory, bool is_exe, Tl
 // image is executable and its process-attach callbacks have run.
 void EnableTlsCallbacks(TlsBinding* binding);
 void DetachTls(TlsBinding* binding);
+
+// Guest modules and the host resolver keep a record of every GetProcAddress a
+// guest performs, so the calls a title resolves by name (rather than through its
+// import table) are visible when the run ends.
+struct DynamicLookupRecord {
+    std::string dll_name;
+    std::string symbol_name;
+    uint64_t hit_count = 0;
+    bool resolved = false;
+};
+
+std::vector<DynamicLookupRecord> SnapshotDynamicLookups();
+
+// Toggles the one-line stderr note for the first failed lookup. Off by default so
+// an ordinary run stays quiet; the import report turns it on.
+void SetDynamicLookupLogging(bool enabled);
 
 void RegisterModule(uint8_t* base, uint32_t size, const std::string& path, bool is_exe);
 void UnregisterModule(uint8_t* base);

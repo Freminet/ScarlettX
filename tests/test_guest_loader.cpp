@@ -186,6 +186,66 @@ void TestModuleQueries() {
     guest::UnregisterModule(fake_dll);
     SX_REQUIRE(guest::FindModuleBase(fake_dll) == nullptr);
     SX_REQUIRE(handle_w(nullptr) == GetModuleHandleW(nullptr));
+
+    // GetProcAddress goes through the override so the run can report the names a
+    // title resolves dynamically, including the ones the host does not have.
+    using GetProcAddr = FARPROC(WINAPI*)(HMODULE, LPCSTR);
+    const auto get_proc =
+        reinterpret_cast<GetProcAddr>(guest::LookupImportOverride("kernel32.dll", "GetProcAddress"));
+    SX_REQUIRE(get_proc != nullptr);
+    const HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    SX_REQUIRE(get_proc(kernel32, "GetCurrentProcessId") == GetProcAddress(kernel32, "GetCurrentProcessId"));
+    SX_REQUIRE(get_proc(kernel32, "XScarlettXNoSuchFunction") == nullptr);
+    SX_REQUIRE(get_proc(kernel32, "XScarlettXNoSuchFunction") == nullptr);
+    SX_REQUIRE(get_proc(kernel32, "GetCurrentProcessId") != nullptr);
+
+    // Ordinal lookups pass the ordinal as the pointer, not a string: it must not
+    // be dereferenced, and the report has to record it as "#n".
+    const auto lower = [](std::string text) {
+        for (auto& c : text) {
+            if (c >= 'A' && c <= 'Z') {
+                c = static_cast<char>(c + 32);
+            }
+        }
+        return text;
+    };
+    const FARPROC ordinal_result = get_proc(kernel32, MAKEINTRESOURCEA(1));
+    SX_REQUIRE(ordinal_result == GetProcAddress(kernel32, MAKEINTRESOURCEA(1)));
+    SX_REQUIRE(get_proc(kernel32, MAKEINTRESOURCEA(0xFFFF)) == nullptr);
+    bool saw_ordinal = false;
+    bool saw_invalid_ordinal = false;
+    for (const auto& lookup : guest::SnapshotDynamicLookups()) {
+        if (lower(lookup.dll_name) != "kernel32.dll") {
+            continue;
+        }
+        if (lookup.symbol_name == "#1") {
+            saw_ordinal = true;
+        } else if (lookup.symbol_name == "#65535") {
+            SX_REQUIRE(!lookup.resolved);
+            saw_invalid_ordinal = true;
+        }
+    }
+    SX_REQUIRE(saw_ordinal);
+    SX_REQUIRE(saw_invalid_ordinal);
+
+    size_t known_hits = 0;
+    size_t missing_entries = 0;
+    for (const auto& lookup : guest::SnapshotDynamicLookups()) {
+        if (lower(lookup.dll_name) != "kernel32.dll") {
+            continue;
+        }
+        if (lookup.symbol_name == "GetCurrentProcessId") {
+            SX_REQUIRE(lookup.resolved);
+            known_hits = static_cast<size_t>(lookup.hit_count);
+        } else if (lookup.symbol_name == "XScarlettXNoSuchFunction") {
+            SX_REQUIRE(!lookup.resolved);
+            // The registry aggregates repeats instead of appending them.
+            SX_REQUIRE(lookup.hit_count == 2);
+            missing_entries += 1;
+        }
+    }
+    SX_REQUIRE(known_hits == 2);
+    SX_REQUIRE(missing_entries == 1);
 }
 
 char FreeDriveLetter() {
