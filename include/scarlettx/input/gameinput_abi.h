@@ -78,6 +78,9 @@ struct GAMEINPUT_RUMBLE_PARAMS {
 };
 
 SCARLETTX_GAMEINPUT_API int32_t GameInputCreate(uint64_t* out_game_input);
+// Public v0 entry point: retrieves an IGameInput for a requested API version.
+// Only the v0 IID is accepted, matching the vtable layout this shim exposes.
+SCARLETTX_GAMEINPUT_API int32_t GameInputInitialize(const void* riid, void** out_game_input);
 SCARLETTX_GAMEINPUT_API int32_t GameInputDestroy(uint64_t game_input);
 SCARLETTX_GAMEINPUT_API uint64_t GameInputGetCurrentTimestamp(uint64_t game_input);
 

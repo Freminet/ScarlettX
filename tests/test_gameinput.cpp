@@ -52,6 +52,7 @@ struct Guid {
     uint8_t d4[8];
 };
 const Guid kIidIUnknown = {0x00000000u, 0x0000u, 0x0000u, {0xC0, 0, 0, 0, 0, 0, 0, 0x46}};
+const Guid kIidGameInputV0 = {0x11BE2A7Eu, 0x4254u, 0x445Au, {0x9C, 0x09, 0xFF, 0xC4, 0x0F, 0x00, 0x69, 0x18}};
 const Guid kIidUnrelated = {0x12345678u, 0x1234u, 0x5678u, {1, 2, 3, 4, 5, 6, 7, 8}};
 
 struct DeviceEvents {
@@ -74,6 +75,7 @@ void GI_CALL OnDevice(uint64_t token, void* context, void* device, uint64_t time
     events->previous_status = previous_status;
 }
 
+constexpr int kGiGetCurrentTimestamp = 3;
 constexpr int kGiGetCurrentReading = 4;
 constexpr int kGiRegisterDeviceCallback = 9;
 constexpr int kDevGetDeviceInfo = 3;
@@ -89,6 +91,21 @@ constexpr intptr_t kReadingNotFound = static_cast<intptr_t>(static_cast<int32_t>
 constexpr intptr_t kNoInterface = static_cast<intptr_t>(static_cast<int32_t>(0x80004002u));
 
 int main() {
+    // 0. GameInputInitialize, the public v0 entry point: the v0 IID returns a
+    //    working IGameInput, anything else E_NOINTERFACE with a null result.
+    {
+        void* init = nullptr;
+        SX_CHECK_EQ(GameInputInitialize(&kIidUnrelated, &init), kNoInterface);
+        SX_CHECK(init == nullptr);
+        SX_CHECK_EQ(GameInputInitialize(&kIidGameInputV0, &init), 0);
+        SX_CHECK(init != nullptr);
+        SX_CHECK(GameInputGetCurrentTimestamp(reinterpret_cast<uint64_t>(init)) > 0);
+        SX_CHECK(Call(init, kGiGetCurrentTimestamp) > 0);
+        SX_CHECK_EQ(GameInputDestroy(reinterpret_cast<uint64_t>(init)), 0);
+        SX_CHECK_EQ(GameInputInitialize(&kIidGameInputV0, nullptr),
+                    static_cast<intptr_t>(static_cast<int32_t>(0x80070057u)));
+    }
+
     uint64_t gi = 0;
     SX_CHECK_EQ(GameInputCreate(&gi), 0);
     SX_CHECK(gi != 0);
