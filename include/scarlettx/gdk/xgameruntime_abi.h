@@ -494,6 +494,37 @@ SCARLETTX_XGR_API bool XMemVirtualFree(
     uint32_t freeType);
 
 // ---------------------------------------------------------------------------
+// XDisplay.h
+// ---------------------------------------------------------------------------
+enum XDisplayHdrModePreference : uint32_t {
+    XDisplayHdrModePreference_PreferHdr = 0,
+    XDisplayHdrModePreference_PreferRefreshRate = 1,
+};
+
+enum XDisplayHdrModeResult : uint32_t {
+    XDisplayHdrModeResult_Unknown = 0,
+    XDisplayHdrModeResult_Enabled = 1,
+    XDisplayHdrModeResult_Disabled = 2,
+};
+
+struct XDisplayHdrModeInfo {
+    float minToneMapLuminance;
+    float maxToneMapLuminance;
+    float maxFullFrameToneMapLuminance;
+};
+
+typedef struct XDisplayTimeoutDeferral* XDisplayTimeoutDeferralHandle;
+
+SCARLETTX_XGR_API XDisplayHdrModeResult XDisplayTryEnableHdrMode(
+    XDisplayHdrModePreference displayModePreference,
+    XDisplayHdrModeInfo* displayHdrModeInfo);
+
+SCARLETTX_XGR_API XGameResult XDisplayAcquireTimeoutDeferral(
+    XDisplayTimeoutDeferralHandle* handle);
+
+SCARLETTX_XGR_API void XDisplayCloseTimeoutDeferralHandle(XDisplayTimeoutDeferralHandle handle);
+
+// ---------------------------------------------------------------------------
 // XThread.h & XGame.h
 // ---------------------------------------------------------------------------
 SCARLETTX_XGR_API bool XThreadIsTimeSensitive();
