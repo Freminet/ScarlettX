@@ -524,6 +524,51 @@ SCARLETTX_XGR_API XGameResult XSpeechToTextSendString(
 SCARLETTX_XGR_API XGameResult XSpeechToTextSetPositionHint(XSpeechToTextPositionHint position);
 
 // ---------------------------------------------------------------------------
+// XSpeechSynthesizer.h
+// ---------------------------------------------------------------------------
+typedef struct XSpeechSynthesizer* XSpeechSynthesizerHandle;
+typedef struct XSpeechSynthesizerStream* XSpeechSynthesizerStreamHandle;
+
+// Only ever received by the enumeration callback: its fields are not public and
+// this HLE never creates one.
+struct XSpeechSynthesizerVoiceInformation;
+
+typedef bool(SCARLETTX_GDK_CALLBACK XSpeechSynthesizerInstalledVoicesCallback)(
+    const XSpeechSynthesizerVoiceInformation* information,
+    void* context);
+
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerCreate(
+    XSpeechSynthesizerHandle* speechSynthesizer);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerCloseHandle(
+    XSpeechSynthesizerHandle speechSynthesizer);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerCreateStreamFromText(
+    XSpeechSynthesizerHandle speechSynthesizer,
+    const char* text,
+    XSpeechSynthesizerStreamHandle* speechSynthesisStream);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerCreateStreamFromSsml(
+    XSpeechSynthesizerHandle speechSynthesizer,
+    const char* ssml,
+    XSpeechSynthesizerStreamHandle* speechSynthesisStream);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerCloseStreamHandle(
+    XSpeechSynthesizerStreamHandle speechSynthesisStream);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerGetStreamDataSize(
+    XSpeechSynthesizerStreamHandle speechSynthesisStream,
+    size_t* bufferSize);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerGetStreamData(
+    XSpeechSynthesizerStreamHandle speechSynthesisStream,
+    size_t bufferSize,
+    void* buffer,
+    size_t* bufferUsed);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerSetDefaultVoice(
+    XSpeechSynthesizerHandle speechSynthesizer);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerSetCustomVoice(
+    XSpeechSynthesizerHandle speechSynthesizer,
+    const char* voiceId);
+SCARLETTX_XGR_API XGameResult XSpeechSynthesizerEnumerateInstalledVoices(
+    void* context,
+    XSpeechSynthesizerInstalledVoicesCallback* callback);
+
+// ---------------------------------------------------------------------------
 // XMem.h (GDK Memory & Unified Virtual Memory Hooks)
 // ---------------------------------------------------------------------------
 typedef void*(SCARLETTX_GDK_CALLBACK XMemAllocFunction)(
