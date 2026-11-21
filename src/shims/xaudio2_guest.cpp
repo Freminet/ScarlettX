@@ -516,16 +516,21 @@ void* const kEngineVtbl[13] = {
     reinterpret_cast<void*>(&EngineForward<12, void, const void*, void*>),  // SetDebugConfiguration
 };
 
-}  // namespace
-
-extern "C" int32_t ScarlettXGuestXAudio2Create(void** out, uint32_t flags, uint32_t processor) {
-    if (!out) return kInvalidArg;
-    *out = nullptr;
+HMODULE HostXAudio2Dll() {
     static const HMODULE host_dll = []() -> HMODULE {
         wchar_t dir[MAX_PATH] = {};
         if (GetSystemDirectoryW(dir, MAX_PATH) == 0) return nullptr;
         return LoadLibraryW((std::wstring(dir) + L"\\XAudio2_9.dll").c_str());
     }();
+    return host_dll;
+}
+
+}  // namespace
+
+extern "C" int32_t ScarlettXGuestXAudio2Create(void** out, uint32_t flags, uint32_t processor) {
+    if (!out) return kInvalidArg;
+    *out = nullptr;
+    const HMODULE host_dll = HostXAudio2Dll();
     using CreateFn = int32_t (WINAPI*)(void**, uint32_t, uint32_t);
     const auto create = host_dll
         ? reinterpret_cast<CreateFn>(reinterpret_cast<void*>(GetProcAddress(host_dll, "XAudio2Create")))
@@ -566,11 +571,49 @@ extern "C" int32_t ScarlettXGuestXAudio2Create(void** out, uint32_t flags, uint3
     return hr;
 }
 
+extern "C" __declspec(dllexport) int32_t X3DAudioInitialize(uint32_t speaker_channel_mask,
+                                                            float speed_of_sound,
+                                                            uint8_t* instance) {
+    if (!instance) return static_cast<int32_t>(0x80070057u);
+    using InitFn = int32_t (WINAPI*)(uint32_t, float, uint8_t*);
+    static const auto init_fn = []() -> InitFn {
+        const HMODULE dll = HostXAudio2Dll();
+        return dll
+            ? reinterpret_cast<InitFn>(reinterpret_cast<void*>(GetProcAddress(dll, "X3DAudioInitialize")))
+            : nullptr;
+    }();
+    if (!init_fn) return static_cast<int32_t>(0x80004005u);
+    return init_fn(speaker_channel_mask, speed_of_sound, instance);
+}
+
+extern "C" __declspec(dllexport) void X3DAudioCalculate(const uint8_t* instance,
+                                                        const void* listener,
+                                                        const void* emitter,
+                                                        uint32_t flags,
+                                                        void* dsp_settings) {
+    if (!instance || !listener || !emitter || !dsp_settings) return;
+    using CalcFn = void (WINAPI*)(const uint8_t*, const void*, const void*, uint32_t, void*);
+    static const auto calc_fn = []() -> CalcFn {
+        const HMODULE dll = HostXAudio2Dll();
+        return dll
+            ? reinterpret_cast<CalcFn>(reinterpret_cast<void*>(GetProcAddress(dll, "X3DAudioCalculate")))
+            : nullptr;
+    }();
+    if (!calc_fn) return;
+    calc_fn(instance, listener, emitter, flags, dsp_settings);
+}
+
 #else  // !_WIN32
 
 extern "C" int32_t ScarlettXGuestXAudio2Create(void** out, uint32_t, uint32_t) {
     if (out) *out = nullptr;
     return static_cast<int32_t>(0x80004001u);
 }
+
+extern "C" int32_t X3DAudioInitialize(uint32_t, float, uint8_t*) {
+    return static_cast<int32_t>(0x80004001u);
+}
+
+extern "C" void X3DAudioCalculate(const uint8_t*, const void*, const void*, uint32_t, void*) {}
 
 #endif

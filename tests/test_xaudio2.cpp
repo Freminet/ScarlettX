@@ -6,6 +6,11 @@
 
 #include "scarlettx/audio/xaudio2_abi.h"
 
+#if defined(_WIN32)
+#include <windows.h>
+#include <x3daudio.h>
+#endif
+
 #define SX_CHECK(cond)                                                          \
     do {                                                                        \
         if (!(cond)) {                                                          \
@@ -157,6 +162,38 @@ int main() {
     SX_CHECK_EQ(XAudio2DestroyVoice(submix), 0);
     SX_CHECK_EQ(XAudio2DestroyVoice(master), 0);
     SX_CHECK_EQ(XAudio2DestroyEngine(engine), 0);
+
+#if defined(_WIN32)
+    {
+        X3DAUDIO_HANDLE h{};
+        const HRESULT x3d_hr = X3DAudioInitialize(SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT,
+                                                  X3DAUDIO_SPEED_OF_SOUND, h);
+        if (x3d_hr == E_FAIL) {
+            // The forwarder answers E_FAIL when the host has no XAudio2_9.dll.
+            std::cerr << "[test_xaudio2] X3DAudio not available on this host: skipping\n";
+        } else {
+            SX_CHECK(x3d_hr == S_OK);
+            X3DAUDIO_LISTENER lis{};
+            lis.OrientFront = {0, 0, 1};
+            lis.OrientTop = {0, 1, 0};
+            lis.Position = {0, 0, 0};
+            X3DAUDIO_EMITTER em{};
+            em.Position = {5, 0, 0};
+            em.OrientFront = {0, 0, 1};
+            em.OrientTop = {0, 1, 0};
+            em.ChannelCount = 1;
+            em.CurveDistanceScaler = 1.0f;
+            em.DopplerScaler = 1.0f;
+            FLOAT32 matrix[2] = {};
+            X3DAUDIO_DSP_SETTINGS dsp{};
+            dsp.SrcChannelCount = 1;
+            dsp.DstChannelCount = 2;
+            dsp.pMatrixCoefficients = matrix;
+            X3DAudioCalculate(h, &lis, &em, X3DAUDIO_CALCULATE_MATRIX, &dsp);
+            SX_CHECK(matrix[1] > matrix[0]);
+        }
+    }
+#endif
 
     std::cout << "[test_xaudio2] All XAudio2 + XMA2 HLE checks passed.\n";
     return 0;
