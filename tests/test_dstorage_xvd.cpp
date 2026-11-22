@@ -136,8 +136,11 @@ int main() {
         SX_CHECK(std::memcmp(mounted_bytes.data(), compressed.data(), comp_size) == 0);
     }
 
+    const auto launch_dir = std::filesystem::current_path();
+    const auto relative_xvd = std::filesystem::path(xvd_path).lexically_relative(launch_dir).string();
+    SX_CHECK(!relative_xvd.empty());
     uint64_t xvd_file = 0;
-    SX_CHECK_EQ(DStorageOpenXvdFile(factory, xvd_path.c_str(), &xvd_file), 0);
+    SX_CHECK_EQ(DStorageOpenXvdFile(factory, relative_xvd.c_str(), &xvd_file), 0);
     uint64_t file_sz = 0;
     SX_CHECK_EQ(DStorageGetFileSize(xvd_file, &file_sz), 0);
     SX_CHECK_EQ(file_sz, comp_size);
@@ -161,8 +164,12 @@ int main() {
     SX_CHECK_EQ(DStorageEnqueueRequest(queue, &req), 0);
     SX_CHECK_EQ(DStorageEnqueueStatus(queue, status_arr, 0), 0);
     SX_CHECK_EQ(DStorageEnqueueSignal(queue, &fence_val, 42, OnSignal, &cb_val), 0);
-    SX_CHECK_EQ(DStorageSubmit(queue), 0);
-    SX_CHECK_EQ(DStorageWaitForIdle(queue, 5000), 0);
+    std::filesystem::current_path(tmp_dir);
+    const auto xvd_submit_hr = DStorageSubmit(queue);
+    const auto xvd_idle_hr = DStorageWaitForIdle(queue, 5000);
+    std::filesystem::current_path(launch_dir);
+    SX_CHECK_EQ(xvd_submit_hr, 0);
+    SX_CHECK_EQ(xvd_idle_hr, 0);
 
     SX_CHECK_EQ(DStorageIsStatusComplete(status_arr, 0), 1u);
     SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 0), 0);
@@ -177,7 +184,6 @@ int main() {
         plain.write(reinterpret_cast<const char*>(original.data()), original.size());
         SX_CHECK(plain.good());
     }
-    const auto launch_dir = std::filesystem::current_path();
     const auto relative_path = plain_path.lexically_relative(launch_dir).string();
     SX_CHECK(!relative_path.empty());
     uint64_t plain_file = 0;

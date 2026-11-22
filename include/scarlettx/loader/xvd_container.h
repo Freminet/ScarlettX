@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -56,11 +57,12 @@ public:
         bool mark_encrypted = false);
 
 private:
+    struct FileBacking;
     Status ParseHeaderFromBytes(const uint8_t* data, size_t size);
 
     std::string path_;
+    std::shared_ptr<FileBacking> file_;
     std::vector<uint8_t> backing_bytes_;
-    bool memory_backed_ = false;
     XvdHeaderInfo header_{};
 };
 
