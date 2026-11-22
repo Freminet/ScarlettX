@@ -161,6 +161,20 @@ add_dependencies(scarlettx
 # ---------------------------------------------------------------------------
 # Synthetic Scarlett GDK Test Games (compile as real x86-64 PEs linking HLE DLLs)
 # ---------------------------------------------------------------------------
+function(scarlettx_stage_game target)
+    set(package_files "${CMAKE_CURRENT_SOURCE_DIR}/tests/synthetic_games/${target}/MicrosoftGame.Config")
+    foreach(shim IN LISTS ARGN)
+        list(APPEND package_files "$<TARGET_FILE:${shim}>")
+    endforeach()
+    set(stage_command
+        ${CMAKE_COMMAND} -E copy_if_different ${package_files} "$<TARGET_FILE_DIR:${target}>")
+    # A shim can relink without changing its import library, so the game may
+    # not relink and its POST_BUILD step may not run on an incremental build.
+    add_custom_target(${target}_package ALL COMMAND ${stage_command}
+        DEPENDS ${target} ${ARGN} VERBATIM)
+    add_custom_command(TARGET ${target} POST_BUILD COMMAND ${stage_command} VERBATIM)
+endfunction()
+
 add_executable(hello_scarlett tests/synthetic_games/hello_scarlett/main.cpp)
 target_link_libraries(hello_scarlett PRIVATE d3d12_xs xgameruntime XboxBvhBuilder)
 target_include_directories(hello_scarlett PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -175,15 +189,7 @@ set_target_properties(rt_showcase PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/packages/rt_showcase"
 )
 foreach(game IN ITEMS hello_scarlett rt_showcase)
-    add_custom_command(TARGET ${game} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/synthetic_games/${game}/MicrosoftGame.Config"
-            "$<TARGET_FILE:d3d12_xs>"
-            "$<TARGET_FILE:xgameruntime>"
-            "$<TARGET_FILE:XboxBvhBuilder>"
-            "$<TARGET_FILE_DIR:${game}>"
-        VERBATIM
-    )
+    scarlettx_stage_game(${game} d3d12_xs xgameruntime XboxBvhBuilder)
 endforeach()
 
 # Synthetic Scarlett Game 3: iat_probe (in-process PE64 + ordinal + auto-stub test target)
@@ -252,19 +258,7 @@ endif()
 set_target_properties(scarlett_arena PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/packages/scarlett_arena"
 )
-add_custom_command(TARGET scarlett_arena POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/synthetic_games/scarlett_arena/MicrosoftGame.Config"
-        "$<TARGET_FILE_DIR:scarlett_arena>/MicrosoftGame.Config"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "$<TARGET_FILE:xgameruntime>"
-        "$<TARGET_FILE:d3d12_xs>"
-        "$<TARGET_FILE:XboxBvhBuilder>"
-        "$<TARGET_FILE:dstorage>"
-        "$<TARGET_FILE:xaudio2_9>"
-        "$<TARGET_FILE:GameInput>"
-        "$<TARGET_FILE_DIR:scarlett_arena>"
-)
+scarlettx_stage_game(scarlett_arena xgameruntime d3d12_xs XboxBvhBuilder dstorage xaudio2_9 GameInput)
 
 # ---------------------------------------------------------------------------
 # Autonomous Test Suite
@@ -345,13 +339,7 @@ target_compile_definitions(test_scarlett_arena_e2e PRIVATE
     SCARLETTX_ARENA_PACKAGE_DIR="$<TARGET_FILE_DIR:scarlett_arena>")
 target_link_libraries(test_scarlett_arena_e2e PRIVATE dstorage)
 add_dependencies(test_scarlett_arena_e2e
-    scarlett_arena
-    xgameruntime
-    d3d12_xs
-    XboxBvhBuilder
-    dstorage
-    xaudio2_9
-    GameInput
+    scarlett_arena_package
 )
 
 add_test(
