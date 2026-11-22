@@ -1021,35 +1021,47 @@ bool UploadGuestTextureBatch(ID3D12CommandQueue* queue, ID3D12Device* device,
 void FlushGuestTextureWrites(ID3D12CommandQueue* queue, ID3D12Device* device) {
     std::lock_guard<std::mutex> lock(g_guest_textures_mutex);
     if (g_guest_textures.empty()) return;
+    static const DWORD page_size = [] {
+        SYSTEM_INFO info{};
+        GetSystemInfo(&info);
+        return info.dwPageSize;
+    }();
     std::vector<GuestTextureUpload> uploads;
     std::vector<void*> pages;
     for (XboxD3D12ResourceProxy* tex : g_guest_textures) {
         GuestTextureMemory& mem = *tex->guest_memory;
         if (mem.device != device) continue;
-        pages.resize(mem.size / 4096 + 1);
+        pages.resize((mem.size - 1) / page_size + 1);
         ULONG_PTR count = pages.size();
         DWORD granularity = 0;
         // Reading resets the watch: a write that lands during the copy is picked up next time.
-        if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, mem.base, mem.size, pages.data(), &count, &granularity) != 0) {
+        if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, mem.base, mem.size, pages.data(), &count, &granularity) != 0 ||
+            granularity == 0) {
             count = 0;
         }
-        pages.resize(count);
+        auto& dirty = mem.pending_mips;
         // Only the subresources the title wrote to: the others may hold data
         // that arrived through command-list copies.
-        const D3D12_RESOURCE_DESC d = tex->pc_res->GetDesc();
-        auto& dirty = mem.pending_mips;
-        const UINT subresources = static_cast<UINT>(d.MipLevels) * d.DepthOrArraySize;
-        for (UINT s = 0; count != 0 && s < subresources; ++s) {
-            uint64_t offset = 0, size = 0;
-            if (!scarlettx::gpu::xg::SubresourceRange(mem.layout, s % d.MipLevels, s / d.MipLevels, &offset, &size)) {
-                continue;
-            }
-            const auto* first = static_cast<const uint8_t*>(mem.base) + offset;
-            const bool written = std::any_of(pages.begin(), pages.end(), [&](void* page) {
-                const auto* p = static_cast<const uint8_t*>(page);
-                return p + granularity > first && p < first + size;
+        if (count != 0) {
+            pages.resize(count);
+            const auto address = [](const void* ptr) { return reinterpret_cast<uintptr_t>(ptr); };
+            std::sort(pages.begin(), pages.end(), [&](void* left, void* right) {
+                return address(left) < address(right);
             });
-            if (written) dirty.push_back(s);
+            const auto desc = tex->pc_res->GetDesc();
+            const UINT subresources = static_cast<UINT>(desc.MipLevels) * desc.DepthOrArraySize;
+            for (UINT s = 0; s < subresources; ++s) {
+                uint64_t offset = 0, size = 0;
+                if (!scarlettx::gpu::xg::SubresourceRange(mem.layout, s % desc.MipLevels, s / desc.MipLevels,
+                                                        &offset, &size) || size == 0) {
+                    continue;
+                }
+                const uintptr_t first = address(mem.base) + offset;
+                const uintptr_t earliest_page = first - std::min<uintptr_t>(first, granularity - 1);
+                const auto page = std::lower_bound(pages.begin(), pages.end(), earliest_page,
+                    [&](void* candidate, uintptr_t earliest) { return address(candidate) < earliest; });
+                if (page != pages.end() && address(*page) < first + size) dirty.push_back(s);
+            }
         }
         if (dirty.empty()) continue;
         std::sort(dirty.begin(), dirty.end());

@@ -11,6 +11,7 @@
 
 #include <d3d12.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -51,6 +52,7 @@ constexpr int kFenceGetCompletedValue = 8;
 constexpr uint32_t kWidth = 100;
 constexpr uint32_t kHeight = 60;
 constexpr uint32_t kMips = 7;  // 100x60 ... 1x1, the last four share the mip tail
+constexpr uint32_t kSlices = 2;
 
 struct Mip {
     uint32_t width, height, pitch;
@@ -177,7 +179,7 @@ int main() {
     td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     td.Width = kWidth;
     td.Height = kHeight;
-    td.DepthOrArraySize = 1;
+    td.DepthOrArraySize = kSlices;
     td.MipLevels = kMips;
     td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     td.SampleDesc.Count = 1;
@@ -192,7 +194,7 @@ int main() {
     xd.Width = kWidth;
     xd.Height = kHeight;
     xd.MipLevels = kMips;
-    xd.ArraySize = 1;
+    xd.ArraySize = kSlices;
     xd.Format = 28;  // DXGI_FORMAT_R8G8B8A8_UNORM
     xd.SampleDesc.Count = 1;
     xd.BindFlags = 0x8;
@@ -200,11 +202,12 @@ int main() {
     auto layout = std::make_unique<XG_RESOURCE_LAYOUT>();
     xg::ComputeTexture2DLayout(xd, layout.get());
 
-    std::vector<Mip> mips(kMips);
+    std::vector<Mip> mips(kMips * kSlices);
     uint64_t offset = 0;
-    for (uint32_t m = 0; m < kMips; ++m) {
-        mips[m].width = kWidth >> m ? kWidth >> m : 1;
-        mips[m].height = kHeight >> m ? kHeight >> m : 1;
+    for (uint32_t m = 0; m < mips.size(); ++m) {
+        const uint32_t level = m % kMips;
+        mips[m].width = std::max(1u, kWidth >> level);
+        mips[m].height = std::max(1u, kHeight >> level);
         mips[m].pitch = (mips[m].width * 4 + 255) & ~255u;
         mips[m].offset = offset;
         mips[m].pixels.resize(static_cast<size_t>(mips[m].width) * 4 * mips[m].height);
@@ -233,8 +236,8 @@ int main() {
         SX_REQUIRE(address != nullptr);
         other_mips = mips;
         Fill(other_mips, 89);
-        for (uint32_t m = 0; m < kMips; ++m) {
-            SX_REQUIRE(xg::CopyIntoSubresource(*layout, address, m, 0, other_mips[m].pixels.data(),
+        for (uint32_t m = 0; m < other_mips.size(); ++m) {
+            SX_REQUIRE(xg::CopyIntoSubresource(*layout, address, m % kMips, m / kMips, other_mips[m].pixels.data(),
                                              other_mips[m].width * 4));
         }
     }
@@ -242,8 +245,9 @@ int main() {
     // Write the cooked data the way a title does, then use the texture.
     for (int pass = 0; pass < 2; ++pass) {
         Fill(mips, static_cast<uint8_t>(pass == 0 ? 3 : 171));
-        for (uint32_t m = 0; m < kMips; ++m) {
-            SX_REQUIRE(xg::CopyIntoSubresource(*layout, memory, m, 0, mips[m].pixels.data(), mips[m].width * 4));
+        for (uint32_t m = 0; m < mips.size(); ++m) {
+            SX_REQUIRE(xg::CopyIntoSubresource(*layout, memory, m % kMips, m / kMips,
+                                             mips[m].pixels.data(), mips[m].width * 4));
         }
         ReadBackAndCompare(c, mips, pass == 0);
     }
@@ -297,13 +301,15 @@ int main() {
         SX_REQUIRE(xg::CopyIntoSubresource(*layout, memory, 0, 0, mips[0].pixels.data(), mips[0].width * 4));
         Mip& tail = mips.back();
         tail.pixels[0] ^= 0xFF;
-        SX_REQUIRE(xg::CopyIntoSubresource(*layout, memory, kMips - 1, 0, tail.pixels.data(), tail.width * 4));
+        SX_REQUIRE(xg::CopyIntoSubresource(*layout, memory, kMips - 1, kSlices - 1,
+                                         tail.pixels.data(), tail.width * 4));
         ReadBackAndCompare(c, mips, false);
     }
 
     // A planar format has no single-plane console layout here: no guest
     // memory is handed out (when the adapter can create such a texture at all).
     D3D12_RESOURCE_DESC nv12 = td;
+    nv12.DepthOrArraySize = 1;
     nv12.Width = 64;
     nv12.Height = 64;
     nv12.MipLevels = 1;
@@ -342,6 +348,7 @@ int main() {
         SX_REQUIRE(Call(heap, 2) == 1);
 
         D3D12_RESOURCE_DESC placed_desc = td;
+        placed_desc.DepthOrArraySize = 1;
         placed_desc.Width = 256;
         placed_desc.Height = 128;
         placed_desc.MipLevels = 1;
