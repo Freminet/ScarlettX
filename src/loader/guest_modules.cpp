@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -581,6 +584,95 @@ HMODULE WINAPI GuestGetModuleHandleA(LPCSTR name) {
     return GetModuleHandleA(name);
 }
 
+// --- Dynamic lookup telemetry ---------------------------------------------
+
+namespace {
+
+std::mutex g_dynamic_lookup_mutex;
+std::unordered_map<std::string, DynamicLookupRecord> g_dynamic_lookups;
+std::unordered_map<HMODULE, std::string> g_module_names;
+std::atomic<bool> g_dynamic_lookup_logging{false};
+
+// Human-readable name for a symbol request: a name pointer, or "#<ordinal>" when
+// GetProcAddress was given an ordinal. Ordinal requests pass the number itself as
+// the pointer, so it must never be dereferenced.
+std::string SymbolName(const char* symbol) {
+    if (!symbol) {
+        return {};
+    }
+    if (IS_INTRESOURCE(symbol)) {
+        return "#" + std::to_string(static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(symbol)));
+    }
+    return symbol;
+}
+
+// Cached because the lookup path runs for every GetProcAddress and asking the OS
+// for the module path does not belong on it.
+std::string ModuleBaseNameLocked(HMODULE module) {
+    if (!module) {
+        Module exe;
+        if (FindPrimaryExe(&exe) && !exe.wide_path.empty()) {
+            module = reinterpret_cast<HMODULE>(exe.base);
+        }
+    }
+    const auto cached = g_module_names.find(module);
+    if (cached != g_module_names.end()) {
+        return cached->second;
+    }
+    char path[MAX_PATH + 1] = {};
+    const DWORD length = GetModuleFileNameA(module, path, MAX_PATH);
+    std::string name = "<unknown>";
+    if (length != 0 && length < MAX_PATH) {
+        const std::string full(path, length);
+        const size_t slash = full.find_last_of("\\/");
+        name = slash == std::string::npos ? full : full.substr(slash + 1);
+    }
+    g_module_names.emplace(module, name);
+    return name;
+}
+
+void RecordDynamicLookup(HMODULE module, const char* symbol, bool resolved) {
+    const std::string symbol_name = SymbolName(symbol);
+    if (symbol_name.empty()) {
+        return;
+    }
+    std::string dll;
+    bool first_miss = false;
+    {
+        std::lock_guard<std::mutex> lock(g_dynamic_lookup_mutex);
+        dll = ModuleBaseNameLocked(module);
+        const std::string key = dll + "\x1f" + symbol_name;
+        auto entry = g_dynamic_lookups.find(key);
+        if (entry != g_dynamic_lookups.end()) {
+            entry->second.hit_count += 1;
+            return;
+        }
+        DynamicLookupRecord record;
+        record.dll_name = dll;
+        record.symbol_name = symbol_name;
+        record.hit_count = 1;
+        record.resolved = resolved;
+        g_dynamic_lookups.emplace(key, record);
+        first_miss = !resolved;
+    }
+    // A lookup the host cannot satisfy is the information a title reports about
+    // our missing surface. Only log it when the import report was requested, so a
+    // normal run stays quiet.
+    if (first_miss && g_dynamic_lookup_logging.load(std::memory_order_relaxed)) {
+        std::fprintf(stderr, "[ScarlettX][loader] GetProcAddress miss: %s!%s\n",
+                     dll.c_str(), symbol_name.c_str());
+        std::fflush(stderr);
+    }
+}
+
+FARPROC WINAPI GuestGetProcAddress(HMODULE module, LPCSTR name) {
+    FARPROC result = GetProcAddress(module, name);
+    RecordDynamicLookup(module, name, result != nullptr);
+    return result;
+}
+
+}  // namespace
+
 HMODULE WINAPI GuestGetModuleHandleW(LPCWSTR name) {
     Module m;
     if (name ? FindByName(Narrow(name), &m) : FindPrimaryExe(&m)) {
@@ -677,6 +769,20 @@ PVOID WINAPI GuestRtlPcToFileHeader(PVOID pc, PVOID* base) {
 
 }  // namespace
 
+std::vector<DynamicLookupRecord> SnapshotDynamicLookups() {
+    std::lock_guard<std::mutex> lock(g_dynamic_lookup_mutex);
+    std::vector<DynamicLookupRecord> out;
+    out.reserve(g_dynamic_lookups.size());
+    for (const auto& entry : g_dynamic_lookups) {
+        out.push_back(entry.second);
+    }
+    return out;
+}
+
+void SetDynamicLookupLogging(bool enabled) {
+    g_dynamic_lookup_logging.store(enabled, std::memory_order_relaxed);
+}
+
 void RegisterModule(uint8_t* base, uint32_t size, const std::string& path, bool is_exe) {
     Module m;
     m.base = base;
@@ -711,6 +817,7 @@ void* LookupImportOverride(const std::string& target_dll_lower, const std::strin
         void* address;
     };
     static const Entry kEntries[] = {
+        {"GetProcAddress", reinterpret_cast<void*>(&GuestGetProcAddress)},
         {"GetModuleHandleA", reinterpret_cast<void*>(&GuestGetModuleHandleA)},
         {"GetModuleHandleW", reinterpret_cast<void*>(&GuestGetModuleHandleW)},
         {"GetModuleHandleExA", reinterpret_cast<void*>(&GuestGetModuleHandleExA)},
@@ -848,6 +955,8 @@ void UnregisterModule(uint8_t*) {}
 void* FindModuleBase(const void*) { return nullptr; }
 void* LookupImportOverride(const std::string&, const std::string&) { return nullptr; }
 void PatchHostModuleForGuests(void*) {}
+std::vector<DynamicLookupRecord> SnapshotDynamicLookups() { return {}; }
+void SetDynamicLookupLogging(bool) {}
 
 #endif
 

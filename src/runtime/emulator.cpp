@@ -1,9 +1,12 @@
 #include "scarlettx/runtime/emulator.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 
+#include "../loader/guest_modules.h"
 #include "scarlettx/loader/pe_mapper.h"
 #include "scarlettx/runtime/virtual_drive.h"
 
@@ -14,6 +17,108 @@
 namespace scarlettx {
 
 namespace {
+
+// Prints the imports the run actually touched: the auto-stub trampolines with
+// their call counts, then the names the guest resolved with GetProcAddress.
+// Together they describe the surface a title wants and we do not provide.
+void DumpImportReport(const MappedPeImage& image) {
+    auto stubs = image.Stubs().SnapshotRecords();
+    std::sort(stubs.begin(), stubs.end(), [](const StubCallRecord& a, const StubCallRecord& b) {
+        return a.hit_count > b.hit_count;
+    });
+    std::cout << "[imports] " << stubs.size() << " auto-stub imports, "
+              << guest::SnapshotDynamicLookups().size() << " dynamic lookups" << std::endl;
+    for (const auto& stub : stubs) {
+        std::cout << "[imports] stub " << stub.dll_name << "!";
+        if (stub.by_ordinal) {
+            std::cout << "#" << stub.ordinal;
+        } else {
+            std::cout << stub.symbol_name;
+        }
+        std::cout << " calls=" << stub.hit_count;
+        if (stub.hit_count > 0) {
+            std::cout << " last=0x" << std::hex << stub.last_args[0] << std::dec;
+        }
+        std::cout << std::endl;
+    }
+
+    auto lookups = guest::SnapshotDynamicLookups();
+    std::sort(lookups.begin(), lookups.end(),
+              [](const guest::DynamicLookupRecord& a, const guest::DynamicLookupRecord& b) {
+                  if (a.resolved != b.resolved) {
+                      return !a.resolved;  // unresolved first: they are the gaps
+                  }
+                  return a.hit_count > b.hit_count;
+              });
+    for (const auto& lookup : lookups) {
+        std::cout << "[imports] dynamic " << lookup.dll_name << "!" << lookup.symbol_name
+                  << " calls=" << lookup.hit_count
+                  << (lookup.resolved ? " resolved" : " MISSING") << std::endl;
+    }
+}
+
+// Real titles run until the user interrupts them, so the report is also printed
+// from the console control handler: a guest that never returns still gets one.
+const MappedPeImage* g_import_report_image = nullptr;
+std::mutex g_import_report_mutex;
+bool g_import_report_printed = false;
+
+void PrintImportReportOnce() {
+    std::lock_guard<std::mutex> lock(g_import_report_mutex);
+    if (g_import_report_printed || !g_import_report_image) {
+        return;
+    }
+    g_import_report_printed = true;
+    DumpImportReport(*g_import_report_image);
+}
+
+#if defined(_WIN32)
+BOOL WINAPI ImportReportCtrlHandler(DWORD event) {
+    if (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT) {
+        PrintImportReportOnce();
+    }
+    return FALSE;  // let the default handler terminate the process
+}
+#endif
+
+// Owns the handler registration for the lifetime of the mapped image.
+class ImportReportScope {
+public:
+    explicit ImportReportScope(const MappedPeImage* image) {
+        if (!image) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_import_report_mutex);
+            g_import_report_image = image;
+            g_import_report_printed = false;
+        }
+        active_ = true;
+        guest::SetDynamicLookupLogging(true);
+#if defined(_WIN32)
+        SetConsoleCtrlHandler(ImportReportCtrlHandler, TRUE);
+#endif
+    }
+
+    ~ImportReportScope() {
+        if (!active_) {
+            return;
+        }
+        PrintImportReportOnce();
+#if defined(_WIN32)
+        SetConsoleCtrlHandler(ImportReportCtrlHandler, FALSE);
+#endif
+        guest::SetDynamicLookupLogging(false);
+        std::lock_guard<std::mutex> lock(g_import_report_mutex);
+        g_import_report_image = nullptr;
+    }
+
+    ImportReportScope(const ImportReportScope&) = delete;
+    ImportReportScope& operator=(const ImportReportScope&) = delete;
+
+private:
+    bool active_ = false;
+};
 
 std::string FindGameConfigInDir(const std::string& package_dir) {
     const std::filesystem::path dir(package_dir);
@@ -141,6 +246,7 @@ Status Emulator::BootPackage(const std::string& package_dir) {
         if (!map_st.ok()) {
             return map_st;
         }
+        ImportReportScope import_report(config_.dump_imports ? &image : nullptr);
         std::cout << "[ScarlettX][loader] Mapped " << report.executable_path << " at 0x"
                   << std::hex << image.MappedBase() << std::dec
                   << " (relocated=" << (image.WasRelocated() ? "yes" : "no")
