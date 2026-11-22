@@ -1,5 +1,7 @@
+#include <charconv>
 #include <iostream>
 #include <string>
+#include <string_view>
 
 #include "scarlettx/gpu/d3d12_backend.h"
 #include "scarlettx/gpu/rt_bvh.h"
@@ -78,12 +80,29 @@ int main(int argc, char** argv) {
                 cfg.stats = true;
             } else if (arg == "--force-relocate") {
                 cfg.force_relocate = true;
-            } else if (arg == "--frames" && i + 1 < argc) {
-                cfg.max_frames = static_cast<uint32_t>(std::stoul(argv[++i]));
-            } else if (arg == "--rt-dump" && i + 1 < argc) {
-                cfg.rt_dump_path = argv[++i];
-            } else if (arg == "--raster-dump" && i + 1 < argc) {
-                cfg.raster_dump_path = argv[++i];
+            } else if (arg == "--frames" || arg == "--rt-dump" || arg == "--raster-dump") {
+                if (i + 1 == argc || std::string_view(argv[i + 1]).empty() ||
+                    std::string_view(argv[i + 1]).starts_with("--")) {
+                    std::cerr << "[boot] Missing value for " << arg << "\n";
+                    return 1;
+                }
+                const std::string_view value = argv[++i];
+                if (arg == "--frames") {
+                    const char* end = value.data() + value.size();
+                    const auto result = std::from_chars(value.data(), end, cfg.max_frames);
+                    if (result.ec != std::errc{} || result.ptr != end) {
+                        std::cerr << "[boot] Invalid frame count '" << value
+                                  << "'. Use an unsigned 32-bit decimal integer.\n";
+                        return 1;
+                    }
+                } else if (arg == "--rt-dump") {
+                    cfg.rt_dump_path = value;
+                } else {
+                    cfg.raster_dump_path = value;
+                }
+            } else {
+                std::cerr << "[boot] Unknown option " << arg << "\n";
+                return 1;
             }
         }
         scarlettx::Emulator emu(cfg);
