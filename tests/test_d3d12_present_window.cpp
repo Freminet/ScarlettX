@@ -8,6 +8,7 @@
 
 #include <d3d12.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +26,7 @@ intptr_t Call(void* object, int slot, Args... args) {
 constexpr int kRelease = 2;
 constexpr int kDevCreateCommandQueue = 8;
 constexpr int kDevCreateCommittedResource = 27;
+constexpr int kDevSetFrameIntervalX = 78;
 constexpr int kQueuePresentX = 30;
 
 HWND FindPresentWindow() {
@@ -107,6 +109,19 @@ int main() {
     plane[2] = reinterpret_cast<uint64_t>(frame);
 
     SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
+
+    // Changing the device interval affects an already-created queue.
+    constexpr auto interval = std::chrono::milliseconds(50);
+    SX_REQUIRE(Call(device, kDevSetFrameIntervalX, uintptr_t{0}, uintptr_t{50000},
+                    uintptr_t{2}, uintptr_t{0}) == 0);
+    SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 3; ++i) {
+        SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
+    }
+    SX_REQUIRE(std::chrono::steady_clock::now() - start >= 3 * interval - std::chrono::milliseconds(10));
+    SX_REQUIRE(Call(device, kDevSetFrameIntervalX, uintptr_t{0}, uintptr_t{0},
+                    uintptr_t{2}, uintptr_t{0}) == 0);
 
     const HWND hwnd = FindPresentWindow();
     SX_REQUIRE(hwnd != nullptr);

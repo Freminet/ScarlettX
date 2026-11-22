@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <thread>
 #include <mutex>
 #include "scarlettx/gpu/xg_layout.h"
 #include <sstream>
@@ -2017,6 +2018,8 @@ struct XboxD3D12CommandQueueProxy {
 #if defined(_WIN32)
     ID3D12CommandQueue* pc_queue = nullptr;
     ID3D12Device* pc_device = nullptr;
+    std::shared_ptr<std::atomic<uint32_t>> frame_interval_us;
+    std::chrono::steady_clock::time_point last_present{};
     HWND present_hwnd = nullptr;
     HANDLE present_window_thread = nullptr;
     HANDLE present_window_ready = nullptr;
@@ -2639,6 +2642,12 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
                 obj->present_list->ResourceBarrier(post_n, post);
 
                 if (SUCCEEDED(obj->present_list->Close())) {
+                    const auto interval = std::chrono::microseconds(
+                        obj->frame_interval_us->load(std::memory_order_relaxed));
+                    if (interval.count() != 0) {
+                        std::this_thread::sleep_until(obj->last_present + interval);
+                    }
+                    obj->last_present = std::chrono::steady_clock::now();
                     ID3D12CommandList* lists[] = {obj->present_list};
                     obj->pc_queue->ExecuteCommandLists(1, lists);
                     const HRESULT presented = obj->swapchain->Present(0, 0);
@@ -2710,6 +2719,8 @@ struct XboxD3D12DeviceProxy {
 #if defined(_WIN32)
     ID3D12Device* pc_device = nullptr;
     IDXGIAdapter1* pc_adapter = nullptr;
+    std::shared_ptr<std::atomic<uint32_t>> frame_interval_us =
+        std::make_shared<std::atomic<uint32_t>>(0);
 #endif
 };
 
@@ -2889,6 +2900,7 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyCreateCommandQueue(void* self, uintptr_t pD
     q_proxy->lpVtbl = kXboxCommandQueueProxyVtbl.data();
     q_proxy->pc_queue = pc_q;
     q_proxy->pc_device = obj->pc_device;
+    q_proxy->frame_interval_us = obj->frame_interval_us;
     if (q_proxy->pc_device) q_proxy->pc_device->AddRef();
     *out = q_proxy;
     return 0;
@@ -3782,7 +3794,11 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyCreateCommandListX(
 
 // Observed Xbox device slot 78 (+0x270) at 0x14052f501: SetFrameIntervalX(pOutput, intervalUs=0x411b, period=2, flags=0).
 intptr_t SCARLETTX_GDK_CALLBACK ProxySetFrameIntervalX(
-    void* /*self*/, uintptr_t pOutput, uintptr_t intervalUs, uintptr_t period) {
+    void* self, uintptr_t pOutput, uintptr_t intervalUs, uintptr_t period) {
+#if defined(_WIN32)
+    auto* obj = static_cast<XboxD3D12DeviceProxy*>(self);
+    obj->frame_interval_us->store(static_cast<uint32_t>(intervalUs), std::memory_order_relaxed);
+#endif
     if (TraceEnabled()) {
         std::cerr << "[ScarlettX][d3d12_xs] XboxID3D12Device::SetFrameIntervalX(out=0x" << std::hex << pOutput
                   << ", interval_us=" << std::dec << intervalUs << ", period=" << period << ") -> S_OK\n";
