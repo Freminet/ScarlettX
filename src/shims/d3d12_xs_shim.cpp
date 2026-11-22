@@ -2390,7 +2390,8 @@ void DumpResourceToBmp(
     const std::string& path) {
     if (!obj || !obj->pc_device || !obj->pc_queue || !obj->present_alloc || !obj->present_list || !src_res) return;
     D3D12_RESOURCE_DESC desc = src_res->GetDesc();
-    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Height == 0) return;
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Height == 0 ||
+        desc.SampleDesc.Count != 1) return;
     if (desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS) desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     else if (desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS) desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
@@ -2646,11 +2647,16 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
 
         const auto cur_state = static_cast<D3D12_RESOURCE_STATES>(
             src_proxy->tracked_state.load(std::memory_order_relaxed));
+        const auto format = NormalizeSwapChainFormat(sdesc.Format);
+        const bool multisampled = sdesc.SampleDesc.Count > 1;
+        const bool can_resolve = sdesc.Format == format ||
+            sdesc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS || sdesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS;
+        const auto source_state = multisampled ? D3D12_RESOURCE_STATE_RESOLVE_SOURCE : D3D12_RESOURCE_STATE_COPY_SOURCE;
+        const auto dest_state = multisampled ? D3D12_RESOURCE_STATE_RESOLVE_DEST : D3D12_RESOURCE_STATE_COPY_DEST;
 
-        if (obj->swapchain && obj->present_alloc && obj->present_list &&
+        if ((!multisampled || can_resolve) && obj->swapchain && obj->present_alloc && obj->present_list &&
             WaitForPresentCopy(obj) &&
-            MatchPresentBackBuffers(obj, static_cast<UINT>(sdesc.Width), sdesc.Height,
-                                    NormalizeSwapChainFormat(sdesc.Format)) &&
+            MatchPresentBackBuffers(obj, static_cast<UINT>(sdesc.Width), sdesc.Height, format) &&
             SUCCEEDED(obj->present_alloc->Reset()) &&
             SUCCEEDED(obj->present_list->Reset(obj->present_alloc, nullptr))) {
             const UINT bb_idx = obj->swapchain->GetCurrentBackBufferIndex();
@@ -2658,38 +2664,46 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
             if (SUCCEEDED(obj->swapchain->GetBuffer(bb_idx, __uuidof(ID3D12Resource), reinterpret_cast<void**>(&bb))) && bb) {
                 D3D12_RESOURCE_BARRIER pre[2] = {};
                 UINT pre_n = 0;
-                if (cur_state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+                if (cur_state != source_state) {
                     pre[pre_n].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
                     pre[pre_n].Transition.pResource = src_proxy->pc_res;
                     pre[pre_n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
                     pre[pre_n].Transition.StateBefore = cur_state;
-                    pre[pre_n].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                    pre[pre_n].Transition.StateAfter = source_state;
                     ++pre_n;
                 }
                 pre[pre_n].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
                 pre[pre_n].Transition.pResource = bb;
                 pre[pre_n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
                 pre[pre_n].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-                pre[pre_n].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+                pre[pre_n].Transition.StateAfter = dest_state;
                 ++pre_n;
                 obj->present_list->ResourceBarrier(pre_n, pre);
 
-                obj->present_list->CopyResource(bb, src_proxy->pc_res);
+                if (multisampled) {
+                    obj->present_list->ResolveSubresource(bb, 0, src_proxy->pc_res, 0, format);
+                    if (TraceEnabled()) {
+                        std::cerr << "[ScarlettX][d3d12_xs] Resolving " << sdesc.SampleDesc.Count
+                                  << " samples for PresentX\n";
+                    }
+                } else {
+                    obj->present_list->CopyResource(bb, src_proxy->pc_res);
+                }
 
                 D3D12_RESOURCE_BARRIER post[2] = {};
                 UINT post_n = 0;
-                if (cur_state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+                if (cur_state != source_state) {
                     post[post_n].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
                     post[post_n].Transition.pResource = src_proxy->pc_res;
                     post[post_n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                    post[post_n].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                    post[post_n].Transition.StateBefore = source_state;
                     post[post_n].Transition.StateAfter = cur_state;
                     ++post_n;
                 }
                 post[post_n].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
                 post[post_n].Transition.pResource = bb;
                 post[post_n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                post[post_n].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+                post[post_n].Transition.StateBefore = dest_state;
                 post[post_n].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
                 ++post_n;
                 obj->present_list->ResourceBarrier(post_n, post);

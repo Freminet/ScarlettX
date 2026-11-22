@@ -203,6 +203,17 @@ int main() {
     SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
     SX_REQUIRE(Call(resized_frame, kRelease) == 0);
 
+    td.SampleDesc.Count = 4;
+    void* msaa_frame = nullptr;
+    SX_REQUIRE(Call(device, kDevCreateCommittedResource, &hp, uintptr_t{0}, &td,
+                    static_cast<uintptr_t>(D3D12_RESOURCE_STATE_COMMON), static_cast<void*>(nullptr),
+                    static_cast<void*>(nullptr), &msaa_frame) == 0 && msaa_frame);
+    plane[2] = reinterpret_cast<uint64_t>(msaa_frame);
+    SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
+    plane[2] = reinterpret_cast<uint64_t>(frame);
+    SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
+    SX_REQUIRE(Call(msaa_frame, kRelease) == 0);
+
     // The window goes away with the queue.
     SX_REQUIRE(Call(queue, kRelease) == 0);
     SX_REQUIRE(!IsWindow(hwnd));
