@@ -191,10 +191,21 @@ Status Emulator::BootPackage(const std::string& package_dir) {
                              "CreateProcessA failed for guest executable: " + report.executable_path);
     }
 
-    WaitForSingleObject(pi.hProcess, 60000);
-    DWORD exit_code = 1;
-    GetExitCodeProcess(pi.hProcess, &exit_code);
     CloseHandle(pi.hThread);
+    // Keep the package drive mapped for the entire guest session.
+    if (WaitForSingleObject(pi.hProcess, INFINITE) != WAIT_OBJECT_0) {
+        const DWORD error = GetLastError();
+        CloseHandle(pi.hProcess);
+        return Status::Error(StatusCode::DeviceError,
+                             "Waiting for the guest process failed: " + std::to_string(error));
+    }
+    DWORD exit_code = 0;
+    if (!GetExitCodeProcess(pi.hProcess, &exit_code)) {
+        const DWORD error = GetLastError();
+        CloseHandle(pi.hProcess);
+        return Status::Error(StatusCode::DeviceError,
+                             "Reading the guest exit code failed: " + std::to_string(error));
+    }
     CloseHandle(pi.hProcess);
 
     if (exit_code != 0) {
