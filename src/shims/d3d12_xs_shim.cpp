@@ -2663,10 +2663,13 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
         const bool multisampled = sdesc.SampleDesc.Count > 1;
         const bool can_resolve = sdesc.Format == format ||
             sdesc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS || sdesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS;
+        const bool can_copy = can_resolve || sdesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+                              sdesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
         const auto source_state = multisampled ? D3D12_RESOURCE_STATE_RESOLVE_SOURCE : D3D12_RESOURCE_STATE_COPY_SOURCE;
         const auto dest_state = multisampled ? D3D12_RESOURCE_STATE_RESOLVE_DEST : D3D12_RESOURCE_STATE_COPY_DEST;
 
-        if ((!multisampled || can_resolve) && obj->swapchain && obj->present_alloc && obj->present_list &&
+        if (sdesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+            (multisampled ? can_resolve : can_copy) && obj->swapchain && obj->present_alloc && obj->present_list &&
             WaitForPresentCopy(obj) &&
             MatchPresentBackBuffers(obj, static_cast<UINT>(sdesc.Width), sdesc.Height, format) &&
             SUCCEEDED(obj->present_alloc->Reset()) &&
@@ -2679,7 +2682,7 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
                 if (cur_state != source_state) {
                     pre[pre_n].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
                     pre[pre_n].Transition.pResource = src_proxy->pc_res;
-                    pre[pre_n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    pre[pre_n].Transition.Subresource = 0;
                     pre[pre_n].Transition.StateBefore = cur_state;
                     pre[pre_n].Transition.StateAfter = source_state;
                     ++pre_n;
@@ -2699,7 +2702,18 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
                                   << " samples for PresentX\n";
                     }
                 } else {
-                    obj->present_list->CopyResource(bb, src_proxy->pc_res);
+                    // Present the first mip and slice, independent of the
+                    // source texture's remaining subresources.
+                    D3D12_TEXTURE_COPY_LOCATION dst{};
+                    dst.pResource = bb;
+                    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                    D3D12_TEXTURE_COPY_LOCATION src{};
+                    src.pResource = src_proxy->pc_res;
+                    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                    obj->present_list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+                    if (TraceEnabled() && (sdesc.MipLevels > 1 || sdesc.DepthOrArraySize > 1)) {
+                        std::cerr << "[ScarlettX][d3d12_xs] PresentX copying mip 0 of slice 0\n";
+                    }
                 }
 
                 D3D12_RESOURCE_BARRIER post[2] = {};
@@ -2707,7 +2721,7 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
                 if (cur_state != source_state) {
                     post[post_n].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
                     post[post_n].Transition.pResource = src_proxy->pc_res;
-                    post[post_n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    post[post_n].Transition.Subresource = 0;
                     post[post_n].Transition.StateBefore = source_state;
                     post[post_n].Transition.StateAfter = cur_state;
                     ++post_n;

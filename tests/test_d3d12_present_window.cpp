@@ -214,6 +214,17 @@ int main() {
     SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
     SX_REQUIRE(Call(msaa_frame, kRelease) == 0);
 
+    td.SampleDesc.Count = 1;
+    td.MipLevels = 3;
+    td.DepthOrArraySize = 2;
+    void* array_frame = nullptr;
+    SX_REQUIRE(Call(device, kDevCreateCommittedResource, &hp, uintptr_t{0}, &td,
+                    static_cast<uintptr_t>(D3D12_RESOURCE_STATE_COMMON), static_cast<void*>(nullptr),
+                    static_cast<void*>(nullptr), &array_frame) == 0 && array_frame);
+    plane[2] = reinterpret_cast<uint64_t>(array_frame);
+    SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
+    SX_REQUIRE(Call(array_frame, kRelease) == 0);
+
     // A guest may release its last frame immediately before releasing the queue.
     SX_REQUIRE(Call(frame, kRelease) == 0);
     SX_REQUIRE(Call(queue, kRelease) == 0);
