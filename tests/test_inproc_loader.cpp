@@ -32,7 +32,7 @@ uint64_t FakeOrdinalHleHandler(uint64_t a, uint64_t b) {
 
 int main() {
     const std::filesystem::path probe_dir =
-        std::filesystem::path(SCARLETTX_BINARY_DIR) / "packages" / "iat_probe";
+        SCARLETTX_IAT_PROBE_DIR;
     const std::filesystem::path probe_dll = probe_dir / "iat_probe.dll";
     SX_REQUIRE(std::filesystem::exists(probe_dll));
 

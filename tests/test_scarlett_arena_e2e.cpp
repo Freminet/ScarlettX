@@ -106,7 +106,7 @@ void SetEnv(const char* name, const std::string& val) {
 
 int main() {
     const std::filesystem::path bin_dir = SCARLETTX_BINARY_DIR;
-    const std::filesystem::path pkg_dir = bin_dir / "packages" / "scarlett_arena";
+    const std::filesystem::path pkg_dir = SCARLETTX_ARENA_PACKAGE_DIR;
     const std::filesystem::path xvd_path = pkg_dir / "arena_assets.xvd";
     const std::filesystem::path inproc_frame0 = bin_dir / "arena_inproc_frame0.ppm";
     const std::filesystem::path inproc_frame3 = bin_dir / "arena_inproc_frame3.ppm";

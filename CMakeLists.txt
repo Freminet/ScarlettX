@@ -231,7 +231,7 @@ if(WIN32)
     add_custom_command(TARGET iat_probe POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/synthetic_games/iat_probe/MicrosoftGame.Config"
-            "${CMAKE_BINARY_DIR}/packages/iat_probe/MicrosoftGame.Config"
+            "$<TARGET_FILE_DIR:iat_probe>/MicrosoftGame.Config"
     )
 endif()
 
@@ -277,7 +277,7 @@ function(scarlettx_add_test name src)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
     target_compile_definitions(${name} PRIVATE
-        SCARLETTX_BINARY_DIR="${CMAKE_BINARY_DIR}"
+        SCARLETTX_BINARY_DIR="$<TARGET_FILE_DIR:${name}>"
         SCARLETTX_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME ${name} COMMAND ${name})
@@ -286,10 +286,14 @@ endfunction()
 scarlettx_add_test(test_game_config tests/test_game_config.cpp)
 scarlettx_add_test(test_pe_loader tests/test_pe_loader.cpp)
 add_dependencies(test_pe_loader hello_scarlett rt_showcase)
+target_compile_definitions(test_pe_loader PRIVATE
+    SCARLETTX_RT_SHOWCASE_EXE="$<TARGET_FILE:rt_showcase>")
 
 if(WIN32)
     scarlettx_add_test(test_inproc_loader tests/test_inproc_loader.cpp)
     add_dependencies(test_inproc_loader iat_probe xgameruntime)
+    target_compile_definitions(test_inproc_loader PRIVATE
+        SCARLETTX_IAT_PROBE_DIR="$<TARGET_FILE_DIR:iat_probe>")
     scarlettx_add_test(test_guest_loader tests/test_guest_loader.cpp)
 endif()
 
@@ -337,6 +341,8 @@ target_link_libraries(test_middleware_net PRIVATE
 )
 
 scarlettx_add_test(test_scarlett_arena_e2e tests/test_scarlett_arena_e2e.cpp)
+target_compile_definitions(test_scarlett_arena_e2e PRIVATE
+    SCARLETTX_ARENA_PACKAGE_DIR="$<TARGET_FILE_DIR:scarlett_arena>")
 target_link_libraries(test_scarlett_arena_e2e PRIVATE dstorage)
 add_dependencies(test_scarlett_arena_e2e
     scarlett_arena
@@ -350,9 +356,10 @@ add_dependencies(test_scarlett_arena_e2e
 
 add_test(
     NAME test_boot_hello_scarlett
-    COMMAND $<TARGET_FILE:scarlettx> boot "${CMAKE_BINARY_DIR}/packages/hello_scarlett" --headless --frames 2
+    COMMAND $<TARGET_FILE:scarlettx> boot "$<TARGET_FILE_DIR:hello_scarlett>" --headless --frames 2
 )
 add_test(
     NAME test_boot_rt_showcase
-    COMMAND $<TARGET_FILE:scarlettx> boot "${CMAKE_BINARY_DIR}/packages/rt_showcase" --headless --frames 2 --rt-dump "${CMAKE_BINARY_DIR}/rt_showcase_frame.ppm"
+    COMMAND $<TARGET_FILE:scarlettx> boot "$<TARGET_FILE_DIR:rt_showcase>" --headless --frames 2
+        --rt-dump "$<TARGET_FILE_DIR:scarlettx>/rt_showcase_frame.ppm"
 )
