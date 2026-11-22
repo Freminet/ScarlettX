@@ -40,6 +40,7 @@ constexpr int32_t kE_INVALIDARG = static_cast<int32_t>(0x80070057u);
 constexpr int32_t kE_HANDLE = static_cast<int32_t>(0x80070006u);
 constexpr int32_t kE_POINTER = static_cast<int32_t>(0x80004003u);
 constexpr int32_t kE_NOTIMPL = static_cast<int32_t>(0x80004001u);
+constexpr int32_t kGAMEINPUT_E_DEVICE_NOT_FOUND = static_cast<int32_t>(0x838A0002u);
 constexpr int32_t kGAMEINPUT_E_READING_NOT_FOUND = static_cast<int32_t>(0x838A0002u);
 
 constexpr uint64_t kVirtualGamepadId = 1;
@@ -212,7 +213,8 @@ bool GiGuidIs(uintptr_t riid, const GiGuid& guid) {
 constexpr size_t kDeviceInfoSize = 0x180;
 constexpr size_t kInfoOffVendorId = 0x04;        // public header layout, not read by the test title
 constexpr size_t kInfoOffProductId = 0x06;       // public header layout, not read by the test title
-constexpr size_t kInfoOffDeviceId = 0x20;        // 32 bytes
+constexpr size_t kInfoOffDeviceId = 0x20;
+constexpr size_t kDeviceIdSize = 32;
 constexpr size_t kInfoOffSupportedInput = 0x68;
 constexpr size_t kInfoOffName = 0x130;
 constexpr uint32_t kDeviceConnected = 0x1u;
@@ -322,7 +324,7 @@ const auto kGiDeviceVtbl = BuildDeviceVtable();
 GiDeviceProxy& VirtualGamepad() {
     static GiDeviceProxy* const device = [] {
         static const char kName[] = "ScarlettX Virtual Gamepad";
-        static const char kId[32] = "ScarlettX.VirtualGamepad.0";
+        static const char kId[kDeviceIdSize] = "ScarlettX.VirtualGamepad.0";
         auto* d = new GiDeviceProxy();
         d->lpVtbl = kGiDeviceVtbl.data();
         d->name.size_in_bytes = static_cast<uint32_t>(sizeof(kName) - 1);
@@ -340,6 +342,21 @@ GiDeviceProxy& VirtualGamepad() {
         return d;
     }();
     return *device;
+}
+
+intptr_t SCARLETTX_GI_CALL GiFindDeviceFromId(void*, uintptr_t id, uintptr_t ppDevice, uintptr_t) {
+    auto** out = reinterpret_cast<void**>(ppDevice);
+    if (!out) return kE_POINTER;
+    *out = nullptr;
+    if (!id) return kE_INVALIDARG;
+
+    GiDeviceProxy& pad = VirtualGamepad();
+    if (std::memcmp(reinterpret_cast<const void*>(id), pad.info + kInfoOffDeviceId, kDeviceIdSize) != 0) {
+        return kGAMEINPUT_E_DEVICE_NOT_FOUND;
+    }
+    DevAddRef(&pad, 0, 0, 0);
+    *out = &pad;
+    return kS_OK;
 }
 
 intptr_t SCARLETTX_GI_CALL ReadQueryInterface(void* self, uintptr_t riid, uintptr_t ppv, uintptr_t) {
@@ -677,6 +694,7 @@ std::array<GiComFn, 32> BuildGiVtable() {
     vtbl[9] = reinterpret_cast<GiComFn>(&GiRegisterDeviceCallback);
     vtbl[13] = &GiStopCallback;
     vtbl[14] = &GiUnregisterCallback;
+    vtbl[17] = &GiFindDeviceFromId;
     vtbl[22] = &GiSetFocusPolicy;
     return vtbl;
 }

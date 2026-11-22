@@ -77,6 +77,7 @@ void GI_CALL OnDevice(uint64_t token, void* context, void* device, uint64_t time
 constexpr int kGiGetCurrentReading = 4;
 constexpr int kGiGetNextReading = 5;
 constexpr int kGiGetPreviousReading = 6;
+constexpr int kGiFindDeviceFromId = 17;
 constexpr int kGiRegisterDeviceCallback = 9;
 constexpr int kDevGetDeviceInfo = 3;
 constexpr int kDevGetDeviceStatus = 4;
@@ -211,6 +212,17 @@ int main() {
         bool id_set = false;
         for (int i = 0; i < 32; ++i) id_set = id_set || info[0x20 + i] != 0;
         SX_CHECK(id_set);
+        uint8_t saved_id[32];
+        std::memcpy(saved_id, info + 0x20, sizeof(saved_id));
+        void* restored_device = nullptr;
+        SX_CHECK_EQ(Call(input, kGiFindDeviceFromId, saved_id, &restored_device), intptr_t{0});
+        SX_CHECK(restored_device == device);
+        SX_CHECK_EQ(Call(restored_device, 2), intptr_t{1});
+        saved_id[31] ^= 1;
+        restored_device = device;
+        constexpr intptr_t kDeviceNotFound = static_cast<intptr_t>(static_cast<int32_t>(0x838A0002u));
+        SX_CHECK_EQ(Call(input, kGiFindDeviceFromId, saved_id, &restored_device), kDeviceNotFound);
+        SX_CHECK(restored_device == nullptr);
         const uint8_t* name = nullptr;
         std::memcpy(&name, info + 0x130, sizeof(name));
         SX_CHECK(name != nullptr);
