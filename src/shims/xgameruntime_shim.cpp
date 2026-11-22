@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -722,14 +723,15 @@ XGameResult XGameSaveSubmitUpdate(XGameSaveUpdateHandle updateContext) {
 
     struct StagingDirectory {
         fs::path path;
+        bool keep_for_recovery = false;
         ~StagingDirectory() {
-            if (!path.empty()) {
+            if (!path.empty() && !keep_for_recovery) {
                 std::error_code ignored;
                 fs::remove_all(path, ignored);
             }
         }
     } staging;
-    if (!updateContext->pending_writes.empty()) {
+    if (!updateContext->pending_writes.empty() || !updateContext->pending_deletes.empty()) {
         static std::atomic<uint64_t> sequence{0};
         const auto timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
         do {
@@ -741,14 +743,29 @@ XGameResult XGameSaveSubmitUpdate(XGameSaveUpdateHandle updateContext) {
         } while (staging.path.empty());
     }
 
-    std::vector<std::pair<fs::path, fs::path>> writes;
+    struct Change {
+        fs::path destination;
+        fs::path temporary;
+        fs::path backup;
+        bool had_original = false;
+    };
+    std::vector<Change> changes;
+    const auto add_change = [&](const fs::path& destination, const fs::path& temporary) {
+        changes.push_back({destination, temporary, staging.path / ("backup-" + std::to_string(changes.size()))});
+    };
+    for (const auto& del_name : updateContext->pending_deletes) {
+        const fs::path destination = container_dir / SanitizeSaveName(del_name);
+        if (fs::exists(destination, ec) && !fs::is_regular_file(destination, ec)) return XGR_E_FAIL;
+        if (ec) return XGR_E_FAIL;
+        add_change(destination, {});
+    }
     for (const auto& [blob_name, bytes] : updateContext->pending_writes) {
         const fs::path destination = container_dir / SanitizeSaveName(blob_name);
         if ((fs::exists(destination, ec) && !fs::is_regular_file(destination, ec)) || ec ||
             bytes.size() > static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
             return XGR_E_FAIL;
         }
-        const fs::path temporary = staging.path / std::to_string(writes.size());
+        const fs::path temporary = staging.path / std::to_string(changes.size());
         std::ofstream ofs(temporary, std::ios::binary | std::ios::trunc);
         if (!ofs) {
             return XGR_E_FAIL;
@@ -761,22 +778,46 @@ XGameResult XGameSaveSubmitUpdate(XGameSaveUpdateHandle updateContext) {
         if (!ofs) {
             return XGR_E_FAIL;
         }
-        writes.emplace_back(temporary, destination);
+        add_change(destination, temporary);
     }
-    for (const auto& del_name : updateContext->pending_deletes) {
-        const fs::path destination = container_dir / SanitizeSaveName(del_name);
-        if (fs::exists(destination, ec) && !fs::is_regular_file(destination, ec)) return XGR_E_FAIL;
-        if (ec) return XGR_E_FAIL;
+
+    auto change = changes.begin();
+    for (; change != changes.end(); ++change) {
+        change->had_original = fs::exists(change->destination, ec);
+        if (ec) break;
+        if (change->temporary.empty()) {
+            if (change->had_original) fs::rename(change->destination, change->backup, ec);
+        } else {
+            if (change->had_original) {
+                fs::copy_file(change->destination, change->backup, ec);
+                if (ec) break;
+            }
+            fs::rename(change->temporary, change->destination, ec);
+        }
+        if (ec) break;
     }
-    for (const auto& del_name : updateContext->pending_deletes) {
-        fs::remove(container_dir / SanitizeSaveName(del_name), ec);
-        if (ec) return XGR_E_FAIL;
+    if (change == changes.end()) return XGR_S_OK;
+
+    // Unwind only completed changes, in reverse order for names that alias.
+    while (change != changes.begin()) {
+        --change;
+        if (change->had_original) {
+            fs::rename(change->backup, change->destination, ec);
+        } else if (!change->temporary.empty()) {
+            fs::remove(change->destination, ec);
+        } else {
+            continue;
+        }
+        if (ec) {
+            staging.keep_for_recovery = true;
+            std::cerr << "[ScarlettX][XGameSave] Could not roll back " << change->destination
+                      << ": " << ec.message() << "\n";
+            if (change->had_original) {
+                std::cerr << "[ScarlettX][XGameSave] Original blob retained at " << change->backup << "\n";
+            }
+        }
     }
-    for (const auto& [temporary, destination] : writes) {
-        fs::rename(temporary, destination, ec);
-        if (ec) return XGR_E_FAIL;
-    }
-    return XGR_S_OK;
+    return XGR_E_FAIL;
 }
 
 XGameResult XGameSaveSubmitUpdateAsync(

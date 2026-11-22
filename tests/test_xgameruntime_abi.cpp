@@ -7,6 +7,10 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include "scarlettx/gdk/xgameruntime_abi.h"
 
 #define CHECK(cond)                                                              \
@@ -305,6 +309,29 @@ int main() {
     CHECK(XGameSaveReadBlobData(container, read_names, &read_count, read_buf.size(), blob_out) == XGR_S_OK);
     CHECK(blob_out[0].info.size == payload.size());
     CHECK(std::memcmp(blob_out[0].data, payload.data(), payload.size()) == 0);
+
+#if defined(_WIN32)
+    // Allow staging and reads, but prevent replacement of the destination.
+    const auto locked_path = blob_dir / "locked.dat";
+    CHECK(fs::copy_file(blob_dir / "profile.dat", locked_path));
+    failed_update = nullptr;
+    CHECK(XGameSaveCreateUpdate(container, "Rollback save", &failed_update) == XGR_S_OK);
+    CHECK(XGameSaveSubmitBlobDelete(failed_update, "profile.dat") == XGR_S_OK);
+    CHECK(XGameSaveSubmitBlobWrite(failed_update, "locked.dat", nullptr, 0) == XGR_S_OK);
+    const HANDLE locked = CreateFileW(locked_path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                      nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    CHECK(locked != INVALID_HANDLE_VALUE);
+    const auto failed_result = XGameSaveSubmitUpdate(failed_update);
+    CloseHandle(locked);
+    XGameSaveCloseUpdate(failed_update);
+    CHECK(failed_result == XGR_E_FAIL);
+    CHECK(fs::file_size(locked_path) == payload.size());
+    CHECK(fs::remove(locked_path));
+    read_count = 1;
+    CHECK(XGameSaveReadBlobData(container, read_names, &read_count, read_buf.size(), blob_out) == XGR_S_OK);
+    CHECK(blob_out[0].info.size == payload.size());
+    CHECK(std::memcmp(blob_out[0].data, payload.data(), payload.size()) == 0);
+#endif
 
     XGameSaveUpdateHandle replacement = nullptr;
     CHECK(XGameSaveCreateUpdate(container, "Replace save", &replacement) == XGR_S_OK);
