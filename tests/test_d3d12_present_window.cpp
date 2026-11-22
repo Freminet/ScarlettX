@@ -214,9 +214,11 @@ int main() {
     SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
     SX_REQUIRE(Call(msaa_frame, kRelease) == 0);
 
-    // The window goes away with the queue.
+    // A guest may release its last frame immediately before releasing the queue.
+    SX_REQUIRE(Call(frame, kRelease) == 0);
     SX_REQUIRE(Call(queue, kRelease) == 0);
     SX_REQUIRE(!IsWindow(hwnd));
+    SX_REQUIRE(Call(device, kRelease) == 0);
 
     std::printf("test_d3d12_present_window: OK%s\n", modal ? "" : " (modal part skipped)");
     return 0;

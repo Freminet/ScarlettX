@@ -2054,6 +2054,7 @@ struct XboxD3D12CommandQueueProxy {
     ID3D12CommandAllocator* present_alloc = nullptr;
     ID3D12GraphicsCommandList* present_list = nullptr;
     ID3D12Fence* present_fence = nullptr;
+    ID3D12Resource* pending_present_source = nullptr;
     HANDLE present_event = nullptr;
     uint64_t present_fence_val = 0;
     UINT swap_w = 0;
@@ -2091,6 +2092,12 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyRelease(void* self, uintptr_t, uintptr
     const uint32_t rem = obj->ref_count.fetch_sub(1, std::memory_order_acq_rel) - 1;
     if (rem == 0) {
 #if defined(_WIN32)
+        // Drain the last present before releasing the allocator, swap chain,
+        // or source texture referenced by its GPU commands.
+        if (obj->present_fence && obj->present_fence->GetCompletedValue() < obj->present_fence_val) {
+            obj->present_fence->SetEventOnCompletion(obj->present_fence_val, nullptr);
+        }
+        if (obj->pending_present_source) obj->pending_present_source->Release();
         if (obj->present_event) CloseHandle(obj->present_event);
         if (obj->present_fence) obj->present_fence->Release();
         if (obj->present_list) obj->present_list->Release();
@@ -2537,7 +2544,12 @@ bool WaitForPresentCopy(XboxD3D12CommandQueueProxy* obj) {
             WaitForSingleObject(obj->present_event, 2000) != WAIT_OBJECT_0) return false;
     }
     const uint64_t completed = obj->present_fence->GetCompletedValue();
-    return completed != UINT64_MAX && completed >= obj->present_fence_val;
+    if (completed == UINT64_MAX || completed < obj->present_fence_val) return false;
+    if (obj->pending_present_source) {
+        obj->pending_present_source->Release();
+        obj->pending_present_source = nullptr;
+    }
+    return true;
 }
 
 bool MatchPresentBackBuffers(XboxD3D12CommandQueueProxy* obj, UINT width, UINT height, DXGI_FORMAT format) {
@@ -2715,6 +2727,10 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
                         std::this_thread::sleep_until(obj->last_present + interval);
                     }
                     obj->last_present = std::chrono::steady_clock::now();
+                    // Recording a D3D12 command does not retain its resources.
+                    // The guest can release its proxy as soon as PresentX returns.
+                    obj->pending_present_source = src_proxy->pc_res;
+                    obj->pending_present_source->AddRef();
                     ID3D12CommandList* lists[] = {obj->present_list};
                     obj->pc_queue->ExecuteCommandLists(1, lists);
                     const HRESULT presented = obj->swapchain->Present(0, 0);
