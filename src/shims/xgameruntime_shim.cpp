@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -715,14 +716,40 @@ XGameResult XGameSaveSubmitUpdate(XGameSaveUpdateHandle updateContext) {
     std::lock_guard<std::mutex> lock(provider->mutex);
 
     std::error_code ec;
-    fs::create_directories(updateContext->container->dir_path, ec);
+    const fs::path& container_dir = updateContext->container->dir_path;
+    fs::create_directories(container_dir, ec);
+    if (ec) return XGR_E_FAIL;
 
-    for (const auto& del_name : updateContext->pending_deletes) {
-        fs::remove(updateContext->container->dir_path / SanitizeSaveName(del_name), ec);
+    struct StagingDirectory {
+        fs::path path;
+        ~StagingDirectory() {
+            if (!path.empty()) {
+                std::error_code ignored;
+                fs::remove_all(path, ignored);
+            }
+        }
+    } staging;
+    if (!updateContext->pending_writes.empty()) {
+        static std::atomic<uint64_t> sequence{0};
+        const auto timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        do {
+            // The tilde keeps staging directories outside the blob-name namespace.
+            const fs::path candidate = container_dir / ("~save-" + std::to_string(timestamp) + "-" +
+                std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
+            if (fs::create_directory(candidate, ec)) staging.path = candidate;
+            if (ec) return XGR_E_FAIL;
+        } while (staging.path.empty());
     }
+
+    std::vector<std::pair<fs::path, fs::path>> writes;
     for (const auto& [blob_name, bytes] : updateContext->pending_writes) {
-        fs::path file_path = updateContext->container->dir_path / SanitizeSaveName(blob_name);
-        std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
+        const fs::path destination = container_dir / SanitizeSaveName(blob_name);
+        if ((fs::exists(destination, ec) && !fs::is_regular_file(destination, ec)) || ec ||
+            bytes.size() > static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+            return XGR_E_FAIL;
+        }
+        const fs::path temporary = staging.path / std::to_string(writes.size());
+        std::ofstream ofs(temporary, std::ios::binary | std::ios::trunc);
         if (!ofs) {
             return XGR_E_FAIL;
         }
@@ -730,9 +757,24 @@ XGameResult XGameSaveSubmitUpdate(XGameSaveUpdateHandle updateContext) {
             ofs.write(reinterpret_cast<const char*>(bytes.data()),
                       static_cast<std::streamsize>(bytes.size()));
         }
-        if (!ofs.good()) {
+        ofs.close();
+        if (!ofs) {
             return XGR_E_FAIL;
         }
+        writes.emplace_back(temporary, destination);
+    }
+    for (const auto& del_name : updateContext->pending_deletes) {
+        const fs::path destination = container_dir / SanitizeSaveName(del_name);
+        if (fs::exists(destination, ec) && !fs::is_regular_file(destination, ec)) return XGR_E_FAIL;
+        if (ec) return XGR_E_FAIL;
+    }
+    for (const auto& del_name : updateContext->pending_deletes) {
+        fs::remove(container_dir / SanitizeSaveName(del_name), ec);
+        if (ec) return XGR_E_FAIL;
+    }
+    for (const auto& [temporary, destination] : writes) {
+        fs::rename(temporary, destination, ec);
+        if (ec) return XGR_E_FAIL;
     }
     return XGR_S_OK;
 }

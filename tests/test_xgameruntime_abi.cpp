@@ -292,6 +292,30 @@ int main() {
     CHECK(async_blob_out[0].info.size == payload.size());
     CHECK(std::memcmp(async_blob_out[0].data, payload.data(), payload.size()) == 0);
 
+    const auto blob_dir = save_root / "00000000-0000-0000-0000-00005ca00001" / "slot_0";
+    CHECK(fs::create_directory(blob_dir / "blocked.dat"));
+    XGameSaveUpdateHandle failed_update = nullptr;
+    CHECK(XGameSaveCreateUpdate(container, "Failed save", &failed_update) == XGR_S_OK);
+    CHECK(XGameSaveSubmitBlobDelete(failed_update, "profile.dat") == XGR_S_OK);
+    CHECK(XGameSaveSubmitBlobWrite(failed_update, "blocked.dat", nullptr, 0) == XGR_S_OK);
+    CHECK(XGameSaveSubmitUpdate(failed_update) == XGR_E_FAIL);
+    XGameSaveCloseUpdate(failed_update);
+    CHECK(fs::remove(blob_dir / "blocked.dat"));
+    read_count = 1;
+    CHECK(XGameSaveReadBlobData(container, read_names, &read_count, read_buf.size(), blob_out) == XGR_S_OK);
+    CHECK(blob_out[0].info.size == payload.size());
+    CHECK(std::memcmp(blob_out[0].data, payload.data(), payload.size()) == 0);
+
+    XGameSaveUpdateHandle replacement = nullptr;
+    CHECK(XGameSaveCreateUpdate(container, "Replace save", &replacement) == XGR_S_OK);
+    const uint8_t replacement_byte = 42;
+    CHECK(XGameSaveSubmitBlobWrite(replacement, "profile.dat", &replacement_byte, 1) == XGR_S_OK);
+    CHECK(XGameSaveSubmitUpdate(replacement) == XGR_S_OK);
+    XGameSaveCloseUpdate(replacement);
+    read_count = 1;
+    CHECK(XGameSaveReadBlobData(container, read_names, &read_count, read_buf.size(), blob_out) == XGR_S_OK);
+    CHECK(blob_out[0].info.size == 1 && blob_out[0].data[0] == replacement_byte);
+
     // Blob delete + verify empty enumeration
     XGameSaveUpdateHandle del_update = nullptr;
     CHECK(XGameSaveCreateUpdate(container, "Delete blob", &del_update) == XGR_S_OK);
