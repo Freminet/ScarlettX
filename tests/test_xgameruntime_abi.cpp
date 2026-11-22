@@ -84,6 +84,18 @@ bool SCARLETTX_GDK_CALLBACK EnumBlobsCb(const XGameSaveBlobInfo* info, void* ctx
     return true;
 }
 
+struct SaveEnumerationProbe {
+    XGameSaveProviderHandle provider;
+    XGameResult result = XGR_E_FAIL;
+};
+
+bool SCARLETTX_GDK_CALLBACK ProbeSaveQuota(const XGameSaveBlobInfo*, void* ctx) {
+    auto* probe = static_cast<SaveEnumerationProbe*>(ctx);
+    int64_t quota = 0;
+    probe->result = XGameSaveGetRemainingQuota(probe->provider, &quota);
+    return false;
+}
+
 void* SCARLETTX_GDK_CALLBACK CustomAlloc(size_t sz, uint64_t attr) {
     g_custom_allocs.fetch_add(1);
     return XMemAllocDefault(sz, attr);
@@ -270,6 +282,9 @@ int main() {
     std::vector<std::string> blobs;
     CHECK(XGameSaveEnumerateBlobInfo(container, &blobs, EnumBlobsCb) == XGR_S_OK);
     CHECK(blobs.size() == 1 && blobs[0] == "profile.dat");
+    SaveEnumerationProbe probe{provider};
+    CHECK(XGameSaveEnumerateBlobInfo(container, &probe, ProbeSaveQuota) == XGR_S_OK);
+    CHECK(probe.result == XGR_S_OK);
 
     // Sync read
     const char* read_names[] = {"profile.dat"};
