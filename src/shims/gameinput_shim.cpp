@@ -62,6 +62,14 @@ struct ReadingEntry {
     std::vector<GAMEINPUT_KEY_STATE> keys;
 };
 
+struct GamepadSnapshot {
+    uint64_t sequence;
+    uint64_t timestamp;
+    GAMEINPUT_GAMEPAD_STATE state;
+};
+
+std::atomic<uint64_t> g_next_input_id{1};
+
 struct GameInputObject {
     // First field is the COM vtable pointer so real Xbox binaries can call
     // IGameInput methods directly through the pointer returned by GameInputCreate,
@@ -79,8 +87,22 @@ struct GameInputObject {
     // State behind the guest-facing readings (IGameInput::GetCurrentReading).
     bool gamepad_injected = false;
     GAMEINPUT_GAMEPAD_STATE injected_gamepad{};
-    GAMEINPUT_GAMEPAD_STATE last_gamepad{};
-    uint64_t gamepad_sequence = 1;
+    std::deque<GamepadSnapshot> gamepad_history;
+    const uint64_t instance_id = g_next_input_id.fetch_add(1, std::memory_order_relaxed);
+    uint64_t gamepad_sequence = 0;
+
+    void RecordGamepad(const GAMEINPUT_GAMEPAD_STATE& state) {
+        if (!gamepad_history.empty() &&
+            std::memcmp(&state, &gamepad_history.back().state, sizeof(state)) == 0) {
+            return;
+        }
+        gamepad_history.push_back({++gamepad_sequence, NowUs(), state});
+        if (gamepad_history.size() > 256) gamepad_history.pop_front();
+        if (GameInputTraceEnabled()) {
+            std::cerr << "[ScarlettX][GameInput] gamepad buttons=0x" << std::hex << state.Buttons
+                      << std::dec << " seq=" << gamepad_sequence << "\n";
+        }
+    }
 #if defined(_WIN32)
     DWORD host_gamepad_slot = XUSER_MAX_COUNT;
     std::chrono::steady_clock::time_point next_gamepad_probe{};
@@ -216,6 +238,7 @@ struct GiReadingProxy {
     const GiComFn* lpVtbl = nullptr;
     std::atomic<uint32_t> ref_count{1};
     uint32_t input_kind = 0;
+    uint64_t instance_id = 0;
     uint64_t sequence = 0;
     uint64_t timestamp = 0;
     GAMEINPUT_GAMEPAD_STATE gamepad{};
@@ -494,53 +517,77 @@ void ReadHostGamepad(GameInputObject& input, GAMEINPUT_GAMEPAD_STATE* out) {
 #endif
 }
 
-// IGameInput::GetCurrentReading (vtable[4]): a snapshot of the virtual
-// gamepad. The sequence number advances only when the state changes.
+bool MatchesGamepad(uintptr_t kind, uintptr_t device) {
+    return (kind & GAMEINPUT_KIND_GAMEPAD) != 0 &&
+           (device == 0 || device == reinterpret_cast<uintptr_t>(&VirtualGamepad()));
+}
+
+void PollGamepad(GameInputObject& input) {
+    GAMEINPUT_GAMEPAD_STATE state{};
+    if (input.gamepad_injected) {
+        state = input.injected_gamepad;
+    } else {
+        ReadHostGamepad(input, &state);
+    }
+    input.RecordGamepad(state);
+}
+
+intptr_t ReturnGamepadReading(const GameInputObject& input, const GamepadSnapshot& snapshot, void** out) {
+    auto* reading = new (std::nothrow) GiReadingProxy();
+    if (!reading) return kE_OUTOFMEMORY;
+    reading->lpVtbl = kGiReadingVtbl.data();
+    reading->input_kind = GAMEINPUT_KIND_GAMEPAD;
+    reading->instance_id = input.instance_id;
+    reading->gamepad = snapshot.state;
+    reading->sequence = snapshot.sequence;
+    reading->timestamp = snapshot.timestamp;
+    *out = reading;
+    return kS_OK;
+}
+
 intptr_t SCARLETTX_GI_CALL GiGetCurrentReading(
     void* self, uintptr_t input_kind, uintptr_t device, uintptr_t ppReading) {
     auto* obj = static_cast<GameInputObject*>(self);
     auto** out = reinterpret_cast<void**>(ppReading);
     if (!obj || !out) return kE_INVALIDARG;
     *out = nullptr;
-    const bool wanted = (static_cast<uint32_t>(input_kind) & GAMEINPUT_KIND_GAMEPAD) != 0 &&
-                        (device == 0 || device == reinterpret_cast<uintptr_t>(&VirtualGamepad()));
-    if (!wanted) {
-        if (GameInputTraceEnabled()) {
-            std::cerr << "[ScarlettX][GameInput] IGameInput::GetCurrentReading(kind=0x" << std::hex << input_kind
-                      << ", device=0x" << device << std::dec << ") -> GAMEINPUT_E_READING_NOT_FOUND\n";
-        }
-        return kGAMEINPUT_E_READING_NOT_FOUND;
+    if (!MatchesGamepad(input_kind, device)) return kGAMEINPUT_E_READING_NOT_FOUND;
+    std::lock_guard<std::mutex> lk(obj->mu);
+    PollGamepad(*obj);
+    return ReturnGamepadReading(*obj, obj->gamepad_history.back(), out);
+}
+
+template <bool Next>
+intptr_t SCARLETTX_GI_CALL GiGetAdjacentReading(
+    void* self, uintptr_t reference, uintptr_t input_kind, uintptr_t device, uintptr_t ppReading) {
+    auto* obj = static_cast<GameInputObject*>(self);
+    auto** out = reinterpret_cast<void**>(ppReading);
+    if (!obj || !out) return kE_INVALIDARG;
+    *out = nullptr;
+    const auto* reading = reinterpret_cast<const GiReadingProxy*>(reference);
+    if (!reading || reading->lpVtbl != kGiReadingVtbl.data() || reading->instance_id != obj->instance_id) {
+        return kE_INVALIDARG;
     }
-    auto* reading = new (std::nothrow) GiReadingProxy();
-    if (!reading) return kE_OUTOFMEMORY;
-    reading->lpVtbl = kGiReadingVtbl.data();
-    reading->input_kind = GAMEINPUT_KIND_GAMEPAD;
-    // Polls are frequent: trace the first one and every change of state.
-    static std::atomic<bool> first_poll{true};
-    bool changed = first_poll.exchange(false, std::memory_order_relaxed);
-    {
-        std::lock_guard<std::mutex> lk(obj->mu);
-        GAMEINPUT_GAMEPAD_STATE now{};
-        if (obj->gamepad_injected) {
-            now = obj->injected_gamepad;
-        } else {
-            ReadHostGamepad(*obj, &now);
-        }
-        if (std::memcmp(&now, &obj->last_gamepad, sizeof(now)) != 0) {
-            obj->last_gamepad = now;
-            ++obj->gamepad_sequence;
-            changed = true;
-        }
-        reading->gamepad = now;
-        reading->sequence = obj->gamepad_sequence;
-        reading->timestamp = obj->NowUs();
+    if (!MatchesGamepad(input_kind, device)) return kGAMEINPUT_E_READING_NOT_FOUND;
+
+    std::lock_guard<std::mutex> lk(obj->mu);
+    if constexpr (Next) PollGamepad(*obj);
+    auto& history = obj->gamepad_history;
+    constexpr uint64_t kHistoryAgeUs = 500'000;
+    const uint64_t now = obj->NowUs();
+    while (history.size() > 1 && now - history.front().timestamp > kHistoryAgeUs) {
+        history.pop_front();
     }
-    if (changed && GameInputTraceEnabled()) {
-        std::cerr << "[ScarlettX][GameInput] IGameInput::GetCurrentReading: gamepad buttons=0x" << std::hex
-                  << reading->gamepad.Buttons << std::dec << " seq=" << reading->sequence << "\n";
+    const auto current = std::find_if(history.begin(), history.end(), [&](const GamepadSnapshot& snapshot) {
+        return snapshot.sequence == reading->sequence;
+    });
+    if (current == history.end()) return kGAMEINPUT_E_READING_NOT_FOUND;
+    if constexpr (Next) {
+        if (current + 1 != history.end()) return ReturnGamepadReading(*obj, *(current + 1), out);
+    } else {
+        if (current != history.begin()) return ReturnGamepadReading(*obj, *(current - 1), out);
     }
-    *out = reading;
-    return kS_OK;
+    return kGAMEINPUT_E_READING_NOT_FOUND;
 }
 
 // IGameInput::RegisterDeviceCallback (vtable[9] / +0x48):
@@ -625,6 +672,8 @@ std::array<GiComFn, 32> BuildGiVtable() {
     auto vtbl = MakeGiVtable(std::make_index_sequence<29>{});
     vtbl[3] = &GiGetCurrentTimestamp;
     vtbl[4] = &GiGetCurrentReading;
+    vtbl[5] = reinterpret_cast<GiComFn>(&GiGetAdjacentReading<true>);
+    vtbl[6] = reinterpret_cast<GiComFn>(&GiGetAdjacentReading<false>);
     vtbl[9] = reinterpret_cast<GiComFn>(&GiRegisterDeviceCallback);
     vtbl[13] = &GiStopCallback;
     vtbl[14] = &GiUnregisterCallback;
@@ -911,6 +960,7 @@ int32_t GameInputInjectGamepadState(
     std::lock_guard<std::mutex> lk(obj->mu);
     obj->injected_gamepad = entry.gamepad;
     obj->gamepad_injected = true;
+    obj->RecordGamepad(entry.gamepad);
     obj->PushReading(std::move(entry));
     return kS_OK;
 }

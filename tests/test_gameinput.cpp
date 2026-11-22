@@ -75,6 +75,8 @@ void GI_CALL OnDevice(uint64_t token, void* context, void* device, uint64_t time
 }
 
 constexpr int kGiGetCurrentReading = 4;
+constexpr int kGiGetNextReading = 5;
+constexpr int kGiGetPreviousReading = 6;
 constexpr int kGiRegisterDeviceCallback = 9;
 constexpr int kDevGetDeviceInfo = 3;
 constexpr int kDevGetDeviceStatus = 4;
@@ -243,7 +245,7 @@ int main() {
         const intptr_t sequence = Call(reading, kReadGetSequenceNumber, uintptr_t{kKindGamepad});
         SX_CHECK(sequence != 0);
         SX_CHECK_EQ(Call(reading, kReadGetSequenceNumber, uintptr_t{kKindKeyboard}), intptr_t{0});
-        SX_CHECK_EQ(Call(reading, 2), intptr_t{0});
+        void* first = reading;
 
         // The sequence number moves only when the state does.
         SX_CHECK_EQ(Call(input, kGiGetCurrentReading, uintptr_t{kKindGamepad}, static_cast<void*>(nullptr), &reading),
@@ -257,6 +259,21 @@ int main() {
         SX_CHECK_EQ(Call(reading, kReadGetSequenceNumber, uintptr_t{kKindGamepad}), sequence + 1);
         SX_CHECK_EQ(Call(reading, kReadGetGamepadState, &got) & 0xFF, intptr_t{1});
         SX_CHECK_EQ(got.Buttons, static_cast<uint32_t>(GAMEINPUT_GAMEPAD_B));
+        void* next = nullptr;
+        SX_CHECK_EQ(Call(input, kGiGetNextReading, first, uintptr_t{kKindGamepad}, device, &next), intptr_t{0});
+        SX_CHECK_EQ(Call(next, kReadGetGamepadState, &got) & 0xFF, intptr_t{1});
+        SX_CHECK_EQ(got.Buttons, static_cast<uint32_t>(GAMEINPUT_GAMEPAD_B));
+        Call(next, 2);
+        void* previous = nullptr;
+        SX_CHECK_EQ(Call(input, kGiGetPreviousReading, reading, uintptr_t{kKindGamepad}, device, &previous),
+                    intptr_t{0});
+        SX_CHECK_EQ(Call(previous, kReadGetSequenceNumber, uintptr_t{kKindGamepad}), sequence);
+        SX_CHECK_EQ(Call(previous, kReadGetTimestamp), Call(first, kReadGetTimestamp));
+        Call(previous, 2);
+        SX_CHECK_EQ(Call(input, kGiGetNextReading, reading, uintptr_t{kKindGamepad}, device, &next),
+                    kReadingNotFound);
+        SX_CHECK(next == nullptr);
+        Call(first, 2);
         Call(reading, 2);
 
         // There are no keyboard readings on this path, and no readings for
