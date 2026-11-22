@@ -23,3 +23,7 @@ EXPORTS
     XAudio2RenderAudioFrames @21
     XAudio2WriteWavFile @22
     Xma2DecodePacket @23
+    X3DAudioInitialize
+    X3DAudioCalculate
+    CreateAudioReverb
+    CreateAudioVolumeMeter

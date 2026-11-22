@@ -139,4 +139,10 @@ SCARLETTX_XAUDIO2_API int32_t Xma2DecodePacket(
     uint32_t* out_frames_decoded,
     uint16_t* out_channels);
 
+// XAudio2FX factories (xaudio2fx.h). Public signature from the pages of the
+// inline wrappers XAudio2CreateReverb/XAudio2CreateVolumeMeter; the wrappers add
+// only a Flags parameter that they ignore.
+SCARLETTX_XAUDIO2_API int32_t CreateAudioReverb(void** pp_apo);
+SCARLETTX_XAUDIO2_API int32_t CreateAudioVolumeMeter(void** pp_apo);
+
 }  // extern "C"
