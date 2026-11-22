@@ -81,6 +81,7 @@ target_compile_definitions(AcpHal PRIVATE SCARLETTX_BUILDING_ACPHAL=1)
 add_library(xgameruntime SHARED
     src/shims/xgameruntime_shim.cpp
     src/shims/xgr_api_tables.cpp
+    src/shims/xgr_display.cpp
     src/shims/xgr_task_queue.cpp)
 set_target_properties(xgameruntime PROPERTIES PREFIX "" OUTPUT_NAME "xgameruntime")
 target_link_libraries(xgameruntime PRIVATE scarlettx_core)
@@ -303,6 +304,8 @@ scarlettx_add_test(test_query_api_impl tests/test_query_api_impl.cpp)
 target_link_libraries(test_query_api_impl PRIVATE xgameruntime)
 scarlettx_add_test(test_xtaskqueue_xasync tests/test_xtaskqueue_xasync.cpp)
 target_link_libraries(test_xtaskqueue_xasync PRIVATE xgameruntime)
+scarlettx_add_test(test_xdisplay tests/test_xdisplay.cpp)
+target_link_libraries(test_xdisplay PRIVATE xgameruntime)
 scarlettx_add_test(test_d3d12_warp tests/test_d3d12_warp.cpp)
 scarlettx_add_test(test_xg_layout tests/test_xg_layout.cpp)
 target_link_libraries(test_xg_layout PRIVATE xg_xs)
