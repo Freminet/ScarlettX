@@ -76,7 +76,7 @@ Testing against an unencrypted commercial Xbox Series X|S (`Scarlett`) Unity IL2
   - `XAudio2Create` returns guest-facing objects; the title creates its engine, mastering voice and a 48 kHz source voice and polls the play position, against a silent output (the first test machine has no audio device). On a machine with an audio device the title's sound is audible.
   - No `CmdList::Close` failure or device removal in gameplay runs.
   - On a hardware GPU (`--gpu`) the title plays at full speed: about 110 fps at 2,300 draw calls per frame and about 140 fps at 850, measured with `--stats`. An event ran from the countdown to the results screen. The software rasterizer of the first test machine managed about 2 to 3 fps.
-- **Known problems:** Rumble is not forwarded to the host controller.
+- **Controller rumble:** Guest GameInput forwards low- and high-frequency rumble to the selected XInput controller. Trigger vibration is unavailable through XInput.
 - **Current classification:** **In-game** — one title is playable with keyboard or an Xbox controller at full speed on a hardware GPU, with sound and with progress saved between sessions.
 
 ### Current Limitations

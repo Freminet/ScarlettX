@@ -15,6 +15,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -104,10 +105,6 @@ struct GameInputObject {
                       << std::dec << " seq=" << gamepad_sequence << "\n";
         }
     }
-#if defined(_WIN32)
-    DWORD host_gamepad_slot = XUSER_MAX_COUNT;
-    std::chrono::steady_clock::time_point next_gamepad_probe{};
-#endif
 
     uint64_t NowUs() const {
         const auto elapsed = std::chrono::steady_clock::now() - start_time;
@@ -313,11 +310,80 @@ constexpr std::array<GiComFn, sizeof...(Is) + 3> MakeDeviceVtable(std::index_seq
     return {&DevQueryInterface, &DevAddRef, &DevRelease, &DevTracedSlot<static_cast<int>(Is + 3)>...};
 }
 
+#if defined(_WIN32)
+class XInputGamepad {
+public:
+    bool Read(XINPUT_STATE& state) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return Poll(state);
+    }
+
+    void SetRumble(const GAMEINPUT_RUMBLE_PARAMS* params) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        XINPUT_STATE state{};
+        if (!set_state_ || !Poll(state)) return;
+        const auto motor_speed = [](float strength) -> WORD {
+            if (std::isnan(strength)) return 0;
+            return static_cast<WORD>(std::lround(std::clamp(strength, 0.0f, 1.0f) * 65535.0f));
+        };
+        XINPUT_VIBRATION vibration{};
+        if (params) {
+            vibration.wLeftMotorSpeed = motor_speed(params->LowFrequency);
+            vibration.wRightMotorSpeed = motor_speed(params->HighFrequency);
+        }
+        set_state_(slot_, &vibration);
+    }
+
+private:
+    bool Poll(XINPUT_STATE& state) {
+        if (!get_state_) return false;
+        if (slot_ < XUSER_MAX_COUNT) {
+            if (get_state_(slot_, &state) == ERROR_SUCCESS) return true;
+            slot_ = XUSER_MAX_COUNT;
+            next_probe_ = {};
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now < next_probe_) return false;
+        next_probe_ = now + std::chrono::seconds(2);
+        for (DWORD candidate = 0; candidate < XUSER_MAX_COUNT; ++candidate) {
+            if (get_state_(candidate, &state) == ERROR_SUCCESS) {
+                slot_ = candidate;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    std::mutex mutex_;
+    DWORD slot_ = XUSER_MAX_COUNT;
+    std::chrono::steady_clock::time_point next_probe_{};
+    HMODULE module_ = LoadLibraryW(L"xinput1_4.dll");
+    decltype(&XInputGetState) get_state_ = module_
+        ? reinterpret_cast<decltype(&XInputGetState)>(GetProcAddress(module_, "XInputGetState")) : nullptr;
+    decltype(&XInputSetState) set_state_ = module_
+        ? reinterpret_cast<decltype(&XInputSetState)>(GetProcAddress(module_, "XInputSetState")) : nullptr;
+};
+
+XInputGamepad& HostGamepad() {
+    static XInputGamepad pad;
+    return pad;
+}
+#endif
+
+intptr_t SCARLETTX_GI_CALL DevSetRumbleState(void*, uintptr_t params, uintptr_t, uintptr_t) {
+#if defined(_WIN32)
+    HostGamepad().SetRumble(reinterpret_cast<const GAMEINPUT_RUMBLE_PARAMS*>(params));
+#endif
+    return 0;
+}
+
+
 std::array<GiComFn, 21> BuildDeviceVtable() {
     auto vtbl = MakeDeviceVtable(std::make_index_sequence<18>{});
     vtbl[3] = &DevGetDeviceInfo;
     vtbl[4] = &DevGetDeviceStatus;
     vtbl[5] = &DevGetBatteryState;
+    vtbl[10] = &DevSetRumbleState;
     return vtbl;
 }
 
@@ -450,35 +516,11 @@ const auto kGiReadingVtbl = BuildReadingVtable();
 //   Enter/Space = A, Escape/Backspace = B, X = X, Y = Y,
 //   Q/E = shoulders, 1/3 = triggers, Tab = View, P = Menu.
 // ---------------------------------------------------------------------------
-void ReadHostGamepad(GameInputObject& input, GAMEINPUT_GAMEPAD_STATE* out) {
+void ReadHostGamepad(GAMEINPUT_GAMEPAD_STATE* out) {
     *out = GAMEINPUT_GAMEPAD_STATE{};
 #if defined(_WIN32)
-    using XInputGetStateFn = decltype(&XInputGetState);
-    static const XInputGetStateFn get_state = [] {
-        const HMODULE module = LoadLibraryW(L"xinput1_4.dll");
-        return module ? reinterpret_cast<XInputGetStateFn>(
-                            reinterpret_cast<void*>(GetProcAddress(module, "XInputGetState")))
-                      : nullptr;
-    }();
     XINPUT_STATE host{};
-    if (get_state) {
-        if (input.host_gamepad_slot < XUSER_MAX_COUNT &&
-            get_state(input.host_gamepad_slot, &host) != ERROR_SUCCESS) {
-            input.host_gamepad_slot = XUSER_MAX_COUNT;
-            input.next_gamepad_probe = {};
-        }
-        const auto now = std::chrono::steady_clock::now();
-        if (input.host_gamepad_slot == XUSER_MAX_COUNT && now >= input.next_gamepad_probe) {
-            for (DWORD slot = 0; slot < XUSER_MAX_COUNT; ++slot) {
-                if (get_state(slot, &host) == ERROR_SUCCESS) {
-                    input.host_gamepad_slot = slot;
-                    break;
-                }
-            }
-            input.next_gamepad_probe = now + std::chrono::seconds(2);
-        }
-    }
-    if (input.host_gamepad_slot < XUSER_MAX_COUNT) {
+    if (HostGamepad().Read(host)) {
         static const struct {
             uint16_t xinput;
             uint32_t gameinput;
@@ -546,7 +588,7 @@ void PollGamepad(GameInputObject& input) {
     if (input.gamepad_injected) {
         state = input.injected_gamepad;
     } else {
-        ReadHostGamepad(input, &state);
+        ReadHostGamepad(&state);
     }
     input.RecordGamepad(state);
 }
