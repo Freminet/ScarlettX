@@ -364,12 +364,23 @@ int main() {
     CHECK(std::memcmp(blob_out[0].data, payload.data(), payload.size()) == 0);
 #endif
 
-    XGameSaveUpdateHandle replacement = nullptr;
-    CHECK(XGameSaveCreateUpdate(container, "Replace save", &replacement) == XGR_S_OK);
     const uint8_t replacement_byte = 42;
+    XTaskQueueHandle write_queue = nullptr;
+    CHECK(XTaskQueueCreate(XTaskQueueDispatchMode_Manual, XTaskQueueDispatchMode_Manual, &write_queue) == XGR_S_OK);
+    XGameSaveContainerHandle write_container = nullptr;
+    CHECK(XGameSaveCreateContainer(provider, "slot_0", &write_container) == XGR_S_OK);
+    XGameSaveUpdateHandle replacement = nullptr;
+    CHECK(XGameSaveCreateUpdate(write_container, "Replace save", &replacement) == XGR_S_OK);
     CHECK(XGameSaveSubmitBlobWrite(replacement, "profile.dat", &replacement_byte, 1) == XGR_S_OK);
-    CHECK(XGameSaveSubmitUpdate(replacement) == XGR_S_OK);
+    XAsyncBlock deferred_write{};
+    deferred_write.queue = write_queue;
+    CHECK(XGameSaveSubmitUpdateAsync(replacement, &deferred_write) == XGR_S_OK);
+    CHECK(XGameSaveSubmitBlobDelete(replacement, "profile.dat") == XGR_S_OK);
     XGameSaveCloseUpdate(replacement);
+    XGameSaveCloseContainer(write_container);
+    CHECK(XTaskQueueDispatch(write_queue, XTaskQueuePort_Work, 0));
+    CHECK(XGameSaveSubmitUpdateResult(&deferred_write) == XGR_S_OK);
+    XTaskQueueCloseHandle(write_queue);
     read_count = 1;
     CHECK(XGameSaveReadBlobData(container, read_names, &read_count, read_buf.size(), blob_out) == XGR_S_OK);
     CHECK(blob_out[0].info.size == 1 && blob_out[0].data[0] == replacement_byte);

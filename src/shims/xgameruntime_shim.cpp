@@ -142,7 +142,7 @@ struct XGameSaveContainer {
 };
 
 struct XGameSaveUpdate {
-    XGameSaveContainer* container = nullptr;
+    fs::path container_dir;
     std::string display_name;
     std::map<std::string, std::vector<uint8_t>> pending_writes;
     std::vector<std::string> pending_deletes;
@@ -697,7 +697,7 @@ XGameResult XGameSaveCreateUpdate(
     if (!u) {
         return XGR_E_OUTOFMEMORY;
     }
-    u->container = container;
+    u->container_dir = container->dir_path;
     u->display_name = displayName ? displayName : container->name;
     RegisterValidHandle(u);
     *updateContext = u;
@@ -724,6 +724,7 @@ XGameResult XGameSaveSubmitBlobWrite(
     if (byteCount > 0) {
         copy.assign(data, data + byteCount);
     }
+    std::lock_guard<std::mutex> lock(g_save_io_mutex);
     updateContext->pending_writes[blobName] = std::move(copy);
     return XGR_S_OK;
 }
@@ -734,19 +735,17 @@ XGameResult XGameSaveSubmitBlobDelete(
     if (!updateContext || !blobName || !*blobName) {
         return XGR_E_INVALIDARG;
     }
+    std::lock_guard<std::mutex> lock(g_save_io_mutex);
     updateContext->pending_writes.erase(blobName);
     updateContext->pending_deletes.emplace_back(blobName);
     return XGR_S_OK;
 }
 
-XGameResult XGameSaveSubmitUpdate(XGameSaveUpdateHandle updateContext) {
-    if (!updateContext || !updateContext->container || !updateContext->container->provider) {
-        return XGR_E_INVALIDARG;
-    }
+static XGameResult CommitSaveUpdate(const XGameSaveUpdate& update) {
     std::lock_guard<std::mutex> lock(g_save_io_mutex);
 
     std::error_code ec;
-    const fs::path& container_dir = updateContext->container->dir_path;
+    const fs::path& container_dir = update.container_dir;
     fs::create_directories(container_dir, ec);
     if (ec) return XGR_E_FAIL;
 
@@ -760,7 +759,7 @@ XGameResult XGameSaveSubmitUpdate(XGameSaveUpdateHandle updateContext) {
             }
         }
     } staging;
-    if (!updateContext->pending_writes.empty() || !updateContext->pending_deletes.empty()) {
+    if (!update.pending_writes.empty() || !update.pending_deletes.empty()) {
         static std::atomic<uint64_t> sequence{0};
         const auto timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
         do {
@@ -782,13 +781,13 @@ XGameResult XGameSaveSubmitUpdate(XGameSaveUpdateHandle updateContext) {
     const auto add_change = [&](const fs::path& destination, const fs::path& temporary) {
         changes.push_back({destination, temporary, staging.path / ("backup-" + std::to_string(changes.size()))});
     };
-    for (const auto& del_name : updateContext->pending_deletes) {
+    for (const auto& del_name : update.pending_deletes) {
         const fs::path destination = container_dir / SanitizeSaveName(del_name);
         if (fs::exists(destination, ec) && !fs::is_regular_file(destination, ec)) return XGR_E_FAIL;
         if (ec) return XGR_E_FAIL;
         add_change(destination, {});
     }
-    for (const auto& [blob_name, bytes] : updateContext->pending_writes) {
+    for (const auto& [blob_name, bytes] : update.pending_writes) {
         const fs::path destination = container_dir / SanitizeSaveName(blob_name);
         if ((fs::exists(destination, ec) && !fs::is_regular_file(destination, ec)) || ec ||
             bytes.size() > static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
@@ -849,14 +848,21 @@ XGameResult XGameSaveSubmitUpdate(XGameSaveUpdateHandle updateContext) {
     return XGR_E_FAIL;
 }
 
+XGameResult XGameSaveSubmitUpdate(XGameSaveUpdateHandle updateContext) {
+    return updateContext ? CommitSaveUpdate(*updateContext) : XGR_E_INVALIDARG;
+}
+
 XGameResult XGameSaveSubmitUpdateAsync(
     XGameSaveUpdateHandle updateContext,
     XAsyncBlock* async) {
     if (!updateContext || !async) {
         return XGR_E_INVALIDARG;
     }
-    return BeginAsyncOperation(async, [updateContext](XAsyncState* st) {
-        XGameResult hr = XGameSaveSubmitUpdate(updateContext);
+    std::unique_lock<std::mutex> lock(g_save_io_mutex);
+    XGameSaveUpdate snapshot = *updateContext;
+    lock.unlock();
+    return BeginAsyncOperation(async, [snapshot = std::move(snapshot)](XAsyncState* st) {
+        XGameResult hr = CommitSaveUpdate(snapshot);
         CompleteAsyncState(st, hr, 0);
     });
 }
