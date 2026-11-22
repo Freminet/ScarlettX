@@ -1003,7 +1003,7 @@ void UploadGuestTextureBatch(ID3D12CommandQueue* queue,
 // Uploads every guest-memory texture the title has written to since the last call.
 void FlushGuestTextureWrites(ID3D12CommandQueue* queue) {
     std::lock_guard<std::mutex> lock(g_guest_textures_mutex);
-    if (g_guest_textures.empty() || queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) return;
+    if (g_guest_textures.empty()) return;
     std::vector<GuestTextureUpload> uploads;
     std::vector<void*> pages;
     std::vector<UINT> dirty;
@@ -1450,8 +1450,6 @@ std::atomic<uint64_t> g_set_vp_count{0};
 std::atomic<uint64_t> g_submit_count{0};
 std::atomic<uint64_t> g_flush_count{0};
 std::atomic<uint64_t> g_flush_us{0};
-std::atomic<uint64_t> g_frame_epoch{0};
-std::atomic<uint64_t> g_flushed_epoch{~0ull};
 
 bool StatsEnabled() {
     static const bool enabled = []() {
@@ -2126,11 +2124,8 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyExecuteCommandLists(
             std::cerr << "[ScarlettX][d3d12_xs] Queue::ExecuteCommandLists(q=" << self
                       << ", count=" << pc_lists.size() << ")\n";
         }
-        // Flush dirty guest textures once per presented frame, before the first
-        // submit of the frame. Every-submit flushing rescanned every texture
-        // for every command list the title queued.
-        const uint64_t epoch = g_frame_epoch.load(std::memory_order_relaxed);
-        if (g_flushed_epoch.load(std::memory_order_relaxed) != epoch) {
+        // Guest CPU writes can occur between direct submissions, even without a present.
+        if (obj->pc_queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
             LARGE_INTEGER freq{}, start{}, end{};
             QueryPerformanceFrequency(&freq);
             QueryPerformanceCounter(&start);
@@ -2140,7 +2135,6 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyExecuteCommandLists(
                                      (end.QuadPart - start.QuadPart) * 1000000ll / freq.QuadPart),
                                  std::memory_order_relaxed);
             g_flush_count.fetch_add(1, std::memory_order_relaxed);
-            g_flushed_epoch.store(epoch, std::memory_order_relaxed);
         }
         obj->pc_queue->ExecuteCommandLists(static_cast<UINT>(pc_lists.size()), pc_lists.data());
     }
@@ -2523,7 +2517,6 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
     void* self, uintptr_t planeCount, uintptr_t pPlaneParams, uintptr_t pPresentParams) {
     static std::atomic<uint64_t> present_count{0};
     const uint64_t n = present_count.fetch_add(1, std::memory_order_relaxed) + 1;
-    g_frame_epoch.fetch_add(1, std::memory_order_relaxed);
 #if defined(_WIN32)
     auto* obj = static_cast<XboxD3D12CommandQueueProxy*>(self);
     XboxD3D12ResourceProxy* src_proxy = nullptr;
