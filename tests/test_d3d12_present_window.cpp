@@ -28,7 +28,15 @@ intptr_t Call(void* object, int slot, Args... args) {
 
 constexpr int kRelease = 2;
 constexpr int kDevCreateCommandQueue = 8;
+constexpr int kDevCreateCommandAllocator = 9;
+constexpr int kDevCreateCommandList = 12;
+constexpr int kDevCreateDescriptorHeap = 14;
+constexpr int kDevCreateRenderTargetView = 20;
 constexpr int kDevCreateCommittedResource = 27;
+constexpr int kHeapGetCpuStart = 9;
+constexpr int kListClose = 9;
+constexpr int kListClearRenderTargetView = 52;
+constexpr int kQueueExecuteCommandLists = 10;
 constexpr int kDevSetFrameIntervalX = 78;
 constexpr int kQueuePresentX = 30;
 
@@ -118,7 +126,7 @@ int main(int argc, char** argv) {
         SX_REQUIRE(FindPresentWindow() == nullptr);
         const std::string prefix = "headless-present-" + std::to_string(GetCurrentProcessId());
         _putenv_s("SCARLETTX_DUMP_FRAME", prefix.c_str());
-        _putenv_s("SCARLETTX_DUMP_FRAME_AT", "2");
+        _putenv_s("SCARLETTX_DUMP_FRAME_AT", "2,3,4");
         SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
         SX_REQUIRE(FindPresentWindow() == nullptr);
         const auto path = prefix + "_2.bmp";
@@ -128,6 +136,47 @@ int main(int argc, char** argv) {
         bmp.close();
         SX_REQUIRE(std::filesystem::file_size(path) == 54 + td.Width * td.Height * 3);
         SX_REQUIRE(std::filesystem::remove(path));
+
+        D3D12_DESCRIPTOR_HEAP_DESC heap_desc{};
+        heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        heap_desc.NumDescriptors = 1;
+        void* heap = nullptr;
+        SX_REQUIRE(Call(device, kDevCreateDescriptorHeap, &heap_desc, nullptr, &heap) == 0 && heap);
+        const auto rtv = static_cast<uintptr_t>(Call(heap, kHeapGetCpuStart));
+        SX_REQUIRE(rtv != 0);
+        int frame_number = 2;
+        for (const auto format : {DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT}) {
+            td.Format = format;
+            void* color_frame = nullptr;
+            SX_REQUIRE(Call(device, kDevCreateCommittedResource, &hp, uintptr_t{0}, &td,
+                            uintptr_t{D3D12_RESOURCE_STATE_RENDER_TARGET}, nullptr, nullptr, &color_frame) == 0);
+            Call(device, kDevCreateRenderTargetView, color_frame, nullptr, rtv);
+            void* allocator = nullptr;
+            void* list = nullptr;
+            SX_REQUIRE(Call(device, kDevCreateCommandAllocator, uintptr_t{D3D12_COMMAND_LIST_TYPE_DIRECT},
+                            nullptr, &allocator) == 0);
+            SX_REQUIRE(Call(device, kDevCreateCommandList, uintptr_t{0}, uintptr_t{D3D12_COMMAND_LIST_TYPE_DIRECT},
+                            allocator, nullptr, nullptr, &list) == 0);
+            const float clear_color[] = {1.0f, 0.6f, 0.2f, 1.0f};
+            Call(list, kListClearRenderTargetView, rtv, static_cast<const float*>(clear_color), uint32_t{0}, nullptr);
+            SX_REQUIRE(Call(list, kListClose) == 0);
+            Call(queue, kQueueExecuteCommandLists, uintptr_t{1}, &list);
+            plane[2] = reinterpret_cast<uint64_t>(color_frame);
+            SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, nullptr) == 0);
+            const auto color_path = prefix + "_" + std::to_string(++frame_number) + ".bmp";
+            std::ifstream color_bmp(color_path, std::ios::binary);
+            color_bmp.seekg(54);
+            unsigned char bgr[3]{};
+            SX_REQUIRE(color_bmp.read(reinterpret_cast<char*>(bgr), sizeof(bgr)));
+            SX_REQUIRE(bgr[0] == 51 && bgr[1] == 153 && bgr[2] == 255);
+            color_bmp.close();
+            SX_REQUIRE(std::filesystem::remove(color_path));
+            SX_REQUIRE(Call(list, kRelease) == 0);
+            SX_REQUIRE(Call(allocator, kRelease) == 0);
+            SX_REQUIRE(Call(color_frame, kRelease) == 0);
+        }
+        SX_REQUIRE(FindPresentWindow() == nullptr);
+        SX_REQUIRE(Call(heap, kRelease) == 0);
         SX_REQUIRE(Call(frame, kRelease) == 0);
         SX_REQUIRE(Call(queue, kRelease) == 0);
         SX_REQUIRE(Call(device, kRelease) == 0);

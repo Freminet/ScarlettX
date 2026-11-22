@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -2412,6 +2413,16 @@ bool EnsurePresentCopy(XboxD3D12CommandQueueProxy* obj) {
     return obj->present_event != nullptr;
 }
 
+uint8_t HalfToBmpChannel(uint16_t bits) {
+    if ((bits & 0x8000) || bits > 0x7C00) return 0;  // Negative or NaN.
+    if (bits >= 0x3C00) return 255;
+    const int exponent = (bits >> 10) & 0x1F;
+    const int fraction = bits & 0x3FF;
+    const float linear = std::ldexp(static_cast<float>(fraction + (exponent ? 1024 : 0)),
+                                   exponent ? exponent - 25 : -24);
+    return static_cast<uint8_t>(std::lround(linear * 255.0f));
+}
+
 void DumpResourceToBmp(
     XboxD3D12CommandQueueProxy* obj,
     ID3D12Resource* src_res,
@@ -2423,6 +2434,13 @@ void DumpResourceToBmp(
         desc.SampleDesc.Count != 1) return;
     if (desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS) desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     else if (desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS) desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    const bool is_bgra = desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+                         desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    const bool is_rgba = desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
+                         desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    const bool is_rgb10 = desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM;
+    const bool is_float16 = desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    if (!is_bgra && !is_rgba && !is_rgb10 && !is_float16) return;
 
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = {};
     UINT num_rows = 0;
@@ -2520,9 +2538,6 @@ void DumpResourceToBmp(
             std::memcpy(hdr + 28, &bpp, 2);
             std::memcpy(hdr + 34, &pixel_bytes, 4);
 
-            const bool is_bgra = (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
-                                  desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ||
-                                  desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS);
             std::ofstream out(path, std::ios::binary);
             if (!out) {
                 std::cerr << "[ScarlettX][d3d12_xs] frame dump: cannot open " << path << std::endl;
@@ -2536,12 +2551,27 @@ void DumpResourceToBmp(
                     const uint32_t src_y = h - 1u - y;
                     const uint8_t* srow = base + static_cast<size_t>(src_y) * fp.Footprint.RowPitch;
                     for (uint32_t x = 0; x < w; ++x) {
-                        const uint8_t c0 = srow[x * 4 + 0];
-                        const uint8_t c1 = srow[x * 4 + 1];
-                        const uint8_t c2 = srow[x * 4 + 2];
-                        const uint8_t r = is_bgra ? c2 : c0;
-                        const uint8_t g = c1;
-                        const uint8_t b = is_bgra ? c0 : c2;
+                        uint8_t r, g, b;
+                        if (is_rgb10) {
+                            uint32_t pixel = 0;
+                            std::memcpy(&pixel, srow + x * 4, sizeof(pixel));
+                            const auto scale = [](uint32_t value) {
+                                return static_cast<uint8_t>(((value & 0x3FF) * 255 + 511) / 1023);
+                            };
+                            r = scale(pixel);
+                            g = scale(pixel >> 10);
+                            b = scale(pixel >> 20);
+                        } else if (is_float16) {
+                            uint16_t channels[3]{};
+                            std::memcpy(channels, srow + x * 8, sizeof(channels));
+                            r = HalfToBmpChannel(channels[0]);
+                            g = HalfToBmpChannel(channels[1]);
+                            b = HalfToBmpChannel(channels[2]);
+                        } else {
+                            r = srow[x * 4 + (is_bgra ? 2 : 0)];
+                            g = srow[x * 4 + 1];
+                            b = srow[x * 4 + (is_bgra ? 0 : 2)];
+                        }
                         row_buf[x * 3 + 0] = b;
                         row_buf[x * 3 + 1] = g;
                         row_buf[x * 3 + 2] = r;
