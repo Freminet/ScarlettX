@@ -167,11 +167,6 @@ target_include_directories(hello_scarlett PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/in
 set_target_properties(hello_scarlett PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/packages/hello_scarlett"
 )
-add_custom_command(TARGET hello_scarlett POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/synthetic_games/hello_scarlett/MicrosoftGame.Config"
-        "$<TARGET_FILE_DIR:hello_scarlett>/MicrosoftGame.Config"
-)
 
 add_executable(rt_showcase tests/synthetic_games/rt_showcase/main.cpp)
 target_link_libraries(rt_showcase PRIVATE d3d12_xs xgameruntime XboxBvhBuilder)
@@ -179,11 +174,17 @@ target_include_directories(rt_showcase PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inclu
 set_target_properties(rt_showcase PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/packages/rt_showcase"
 )
-add_custom_command(TARGET rt_showcase POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/synthetic_games/rt_showcase/MicrosoftGame.Config"
-        "$<TARGET_FILE_DIR:rt_showcase>/MicrosoftGame.Config"
-)
+foreach(game IN ITEMS hello_scarlett rt_showcase)
+    add_custom_command(TARGET ${game} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/synthetic_games/${game}/MicrosoftGame.Config"
+            "$<TARGET_FILE:d3d12_xs>"
+            "$<TARGET_FILE:xgameruntime>"
+            "$<TARGET_FILE:XboxBvhBuilder>"
+            "$<TARGET_FILE_DIR:${game}>"
+        VERBATIM
+    )
+endforeach()
 
 # Synthetic Scarlett Game 3: iat_probe (in-process PE64 + ordinal + auto-stub test target)
 if(WIN32)
