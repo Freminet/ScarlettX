@@ -1,9 +1,12 @@
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <latch>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "scarlettx/io/dstorage_abi.h"
@@ -36,6 +39,10 @@ namespace {
 void OnSignal(uint64_t value, void* ctx) {
     auto* flag = static_cast<std::atomic<uint64_t>*>(ctx);
     flag->store(value, std::memory_order_release);
+}
+
+void WaitForReadGate(uint64_t, void* context) {
+    static_cast<std::latch*>(context)->wait();
 }
 
 }  // namespace
@@ -197,6 +204,8 @@ int main() {
     plain_req.DestinationSize = 64;
     plain_req.SourceFileOffset = 3001;
     plain_req.DestinationMemory = first.data();
+    std::latch read_gate(1);
+    SX_CHECK_EQ(DStorageEnqueueSignal(queue, nullptr, 0, WaitForReadGate, &read_gate), 0);
     SX_CHECK_EQ(DStorageEnqueueRequest(queue, &plain_req), 0);
     plain_req.SourceFileOffset = 71;
     plain_req.DestinationMemory = second.data();
@@ -204,14 +213,29 @@ int main() {
     SX_CHECK_EQ(DStorageEnqueueStatus(queue, status_arr, 2), 0);
     std::filesystem::current_path(tmp_dir);
     const auto submit_hr = DStorageSubmit(queue);
+    // Hold the worker until CloseFile invalidates the public handle, so the
+    // reads are guaranteed to run after close has started.
+    std::thread open_gate([&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        uint64_t ignored = 0;
+        while (DStorageGetFileSize(plain_file, &ignored) == 0 &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        read_gate.count_down();
+    });
+    const auto close_hr = DStorageCloseFile(plain_file);
+    const bool data_ready_on_close = std::memcmp(first.data(), original.data() + 3001, first.size()) == 0 &&
+                                     std::memcmp(second.data(), original.data() + 71, second.size()) == 0;
+    open_gate.join();
     const auto idle_hr = DStorageWaitForIdle(queue, 5000);
     std::filesystem::current_path(launch_dir);
     SX_CHECK_EQ(submit_hr, 0);
+    SX_CHECK_EQ(close_hr, 0);
     SX_CHECK_EQ(idle_hr, 0);
     SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 2), 0);
-    SX_CHECK(std::memcmp(first.data(), original.data() + 3001, first.size()) == 0);
-    SX_CHECK(std::memcmp(second.data(), original.data() + 71, second.size()) == 0);
-    SX_CHECK_EQ(DStorageCloseFile(plain_file), 0);
+    SX_CHECK(data_ready_on_close);
+    SX_CHECK(DStorageGetFileSize(plain_file, &file_sz) < 0);
 
     // 4. Cancellation by tag + error record
     std::vector<uint8_t> cancel_dst(64, 0xCC);

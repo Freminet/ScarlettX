@@ -143,6 +143,9 @@ struct FileObject {
     std::mutex stream_mutex;
     std::ifstream stream;
     scarlettx::XvdContainer xvd;
+    std::mutex pending_mutex;
+    std::condition_variable pending_cv;
+    size_t pending_reads = 0;
 };
 
 struct StatusArrayObject {
@@ -161,6 +164,7 @@ enum class QueueItemKind {
 struct QueueItem {
     QueueItemKind kind = QueueItemKind::kRequest;
     DSTORAGE_REQUEST req{};
+    std::shared_ptr<FileObject> file;
     std::string req_name;
     uint64_t* fence_ptr = nullptr;
     uint64_t fence_val = 0;
@@ -201,20 +205,14 @@ DStorageState& State() {
     return s;
 }
 
-int32_t ExecuteRequest(const DSTORAGE_REQUEST& req) {
+int32_t ExecuteRequest(const DSTORAGE_REQUEST& req, const std::shared_ptr<FileObject>& file) {
     if (!req.DestinationMemory || req.DestinationSize == 0) {
         return kE_INVALIDARG;
     }
 
     std::vector<uint8_t> raw;
     if (req.SourceType == DSTORAGE_REQUEST_SOURCE_FILE) {
-        std::shared_ptr<FileObject> file;
-        {
-            std::lock_guard<std::mutex> lk(State().mu);
-            auto it = State().files.find(req.SourceFileHandle);
-            if (it == State().files.end()) return kE_HANDLE;
-            file = it->second;
-        }
+        if (!file) return kE_HANDLE;
         if (req.SourceFileOffset > file->size ||
             req.SourceSize > file->size - req.SourceFileOffset) {
             return kE_INVALIDARG;
@@ -282,7 +280,11 @@ void QueueWorkerLoop(std::shared_ptr<QueueObject> q) {
         }
 
         if (item.kind == QueueItemKind::kRequest) {
-            int32_t hr = item.cancelled ? kE_ABORT : ExecuteRequest(item.req);
+            int32_t hr = item.cancelled ? kE_ABORT : ExecuteRequest(item.req, item.file);
+            if (item.file) {
+                std::lock_guard<std::mutex> lock(item.file->pending_mutex);
+                if (--item.file->pending_reads == 0) item.file->pending_cv.notify_all();
+            }
             if (hr < 0) {
                 std::lock_guard<std::mutex> lk(q->mu);
                 if (q->error_record.FailureCount == 0) {
@@ -407,8 +409,22 @@ int32_t DStorageOpenXvdFile(uint64_t factory, const char* xvd_path, uint64_t* ou
 }
 
 int32_t DStorageCloseFile(uint64_t file) {
-    std::lock_guard<std::mutex> lk(State().mu);
-    return State().files.erase(file) ? kS_OK : kE_HANDLE;
+    std::shared_ptr<FileObject> object;
+    {
+        std::lock_guard<std::mutex> lock(State().mu);
+        auto it = State().files.find(file);
+        if (it == State().files.end()) return kE_HANDLE;
+        object = std::move(it->second);
+        State().files.erase(it);
+    }
+    std::unique_lock<std::mutex> lock(object->pending_mutex);
+    object->pending_cv.wait(lock, [&] { return object->pending_reads == 0; });
+    if (object->is_xvd) {
+        object->xvd = {};
+    } else {
+        object->stream.close();
+    }
+    return kS_OK;
 }
 
 int32_t DStorageGetFileSize(uint64_t file, uint64_t* out_size) {
@@ -531,10 +547,20 @@ int32_t DStorageSubmit(uint64_t queue) {
         q = it->second;
     }
     {
-        std::lock_guard<std::mutex> lk(q->mu);
+        std::scoped_lock lock(State().mu, q->mu);
+        if (q->stop) return kE_HANDLE;
         while (!q->staged.empty()) {
             q->submitted.push_back(std::move(q->staged.front()));
             q->staged.pop_front();
+            auto& item = q->submitted.back();
+            if (item.kind == QueueItemKind::kRequest && item.req.SourceType == DSTORAGE_REQUEST_SOURCE_FILE) {
+                const auto file = State().files.find(item.req.SourceFileHandle);
+                if (file != State().files.end()) {
+                    item.file = file->second;
+                    std::lock_guard<std::mutex> pending_lock(item.file->pending_mutex);
+                    ++item.file->pending_reads;
+                }
+            }
         }
     }
     q->cv.notify_one();
