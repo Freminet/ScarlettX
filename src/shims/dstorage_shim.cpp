@@ -19,6 +19,7 @@
 namespace {
 
 constexpr int32_t kS_OK = 0;
+constexpr int32_t kE_PENDING = static_cast<int32_t>(0x8000000Au);
 constexpr int32_t kE_INVALIDARG = static_cast<int32_t>(0x80070057u);
 constexpr int32_t kE_FAIL = static_cast<int32_t>(0x80004005u);
 constexpr int32_t kE_NOTIMPL = static_cast<int32_t>(0x80004001u);
@@ -149,10 +150,13 @@ struct FileObject {
 };
 
 struct StatusArrayObject {
+    struct Slot {
+        uint64_t generation = 0;
+        int32_t result = kE_PENDING;
+    };
     std::mutex mu;
     std::string name;
-    std::vector<uint8_t> completed;
-    std::vector<int32_t> hresults;
+    std::vector<Slot> slots;
 };
 
 enum class QueueItemKind {
@@ -170,8 +174,9 @@ struct QueueItem {
     uint64_t fence_val = 0;
     DSTORAGE_SIGNAL_CALLBACK callback = nullptr;
     void* callback_ctx = nullptr;
-    uint64_t status_array = 0;
+    std::shared_ptr<StatusArrayObject> status_array;
     uint32_t status_index = 0;
+    uint64_t status_generation = 0;
     bool cancelled = false;
 };
 
@@ -297,9 +302,13 @@ void QueueWorkerLoop(std::shared_ptr<QueueObject> q) {
                         sizeof(q->error_record.FailedRequestName) - 1);
                 }
                 q->error_record.FailureCount++;
-                q->last_batch_hr = hr;
+                if (q->last_batch_hr == kS_OK) q->last_batch_hr = hr;
             }
         } else if (item.kind == QueueItemKind::kSignal) {
+            {
+                std::lock_guard<std::mutex> lock(q->mu);
+                q->last_batch_hr = kS_OK;
+            }
             if (item.fence_ptr) {
                 *item.fence_ptr = item.fence_val;
             }
@@ -307,25 +316,15 @@ void QueueWorkerLoop(std::shared_ptr<QueueObject> q) {
                 item.callback(item.fence_val, item.callback_ctx);
             }
         } else if (item.kind == QueueItemKind::kStatus) {
-            std::shared_ptr<StatusArrayObject> arr;
-            {
-                std::lock_guard<std::mutex> lk(State().mu);
-                auto it = State().status_arrays.find(item.status_array);
-                if (it != State().status_arrays.end()) arr = it->second;
-            }
             int32_t batch_hr = kS_OK;
             {
                 std::lock_guard<std::mutex> lk(q->mu);
                 batch_hr = q->last_batch_hr;
                 q->last_batch_hr = kS_OK;
             }
-            if (arr) {
-                std::lock_guard<std::mutex> lk(arr->mu);
-                if (item.status_index < arr->completed.size()) {
-                    arr->hresults[item.status_index] = batch_hr;
-                    arr->completed[item.status_index] = 1;
-                }
-            }
+            std::lock_guard<std::mutex> lock(item.status_array->mu);
+            auto& slot = item.status_array->slots[item.status_index];
+            if (slot.generation == item.status_generation) slot.result = batch_hr;
         }
 
         {
@@ -522,19 +521,28 @@ int32_t DStorageEnqueueSignal(
 
 int32_t DStorageEnqueueStatus(uint64_t queue, uint64_t status_array, uint32_t index) {
     std::shared_ptr<QueueObject> q;
+    std::shared_ptr<StatusArrayObject> array;
     {
         std::lock_guard<std::mutex> lk(State().mu);
         auto it = State().queues.find(queue);
         if (it == State().queues.end()) return kE_HANDLE;
-        if (State().status_arrays.find(status_array) == State().status_arrays.end()) return kE_HANDLE;
+        auto status = State().status_arrays.find(status_array);
+        if (status == State().status_arrays.end()) return kE_HANDLE;
+        array = status->second;
         q = it->second;
     }
     QueueItem item;
     item.kind = QueueItemKind::kStatus;
-    item.status_array = status_array;
+    item.status_array = array;
     item.status_index = index;
-    std::lock_guard<std::mutex> lk(q->mu);
+    std::scoped_lock lock(q->mu, array->mu);
+    if (q->stop) return kE_HANDLE;
+    if (index >= array->slots.size()) return kE_INVALIDARG;
+    auto& slot = array->slots[index];
+    item.status_generation = slot.generation + 1;
     q->staged.push_back(std::move(item));
+    ++slot.generation;
+    slot.result = kE_PENDING;
     return kS_OK;
 }
 
@@ -619,8 +627,7 @@ int32_t DStorageCreateStatusArray(
     }
     auto arr = std::make_shared<StatusArrayObject>();
     if (name) arr->name = name;
-    arr->completed.assign(capacity, 0);
-    arr->hresults.assign(capacity, kS_OK);
+    arr->slots.resize(capacity);
 
     std::lock_guard<std::mutex> lk(State().mu);
     const uint64_t h = State().next_handle++;
@@ -643,8 +650,7 @@ uint32_t DStorageIsStatusComplete(uint64_t status_array, uint32_t index) {
         arr = it->second;
     }
     std::lock_guard<std::mutex> lk(arr->mu);
-    if (index >= arr->completed.size()) return 0;
-    return arr->completed[index] ? 1u : 0u;
+    return index < arr->slots.size() && arr->slots[index].result != kE_PENDING;
 }
 
 int32_t DStorageGetStatusHResult(uint64_t status_array, uint32_t index) {
@@ -656,8 +662,8 @@ int32_t DStorageGetStatusHResult(uint64_t status_array, uint32_t index) {
         arr = it->second;
     }
     std::lock_guard<std::mutex> lk(arr->mu);
-    if (index >= arr->hresults.size()) return kE_INVALIDARG;
-    return arr->hresults[index];
+    if (index >= arr->slots.size()) return kE_INVALIDARG;
+    return arr->slots[index].result;
 }
 
 int32_t DStorageRetrieveErrorRecord(uint64_t queue, DSTORAGE_ERROR_RECORD* out_record) {

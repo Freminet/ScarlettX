@@ -102,6 +102,9 @@ int main() {
     uint64_t status_arr = 0;
     SX_CHECK_EQ(DStorageCreateStatusArray(factory, 8, "TestStatus", &status_arr), 0);
     SX_CHECK_EQ(DStorageIsStatusComplete(status_arr, 0), 0u);
+    constexpr auto pending = static_cast<int32_t>(0x8000000Au);
+    SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 0), pending);
+    SX_CHECK(DStorageEnqueueStatus(queue, status_arr, 8) < 0);
 
     // 3. DirectStorage async file read + GDeflate/LZ-RLE decompression from disk
     std::vector<uint8_t> original(4096);
@@ -252,17 +255,23 @@ int main() {
 
     SX_CHECK_EQ(DStorageEnqueueRequest(queue, &cancel_req), 0);
     SX_CHECK_EQ(DStorageCancelRequestsWithTag(queue, 0xFFFF0000ull, 0xBEEF0000ull), 0);
-    SX_CHECK_EQ(DStorageEnqueueStatus(queue, status_arr, 1), 0);
+    DSTORAGE_REQUEST invalid_req = cancel_req;
+    invalid_req.DestinationMemory = nullptr;
+    invalid_req.Name = "InvalidRead";
+    SX_CHECK_EQ(DStorageEnqueueRequest(queue, &invalid_req), 0);
+    SX_CHECK_EQ(DStorageEnqueueStatus(queue, status_arr, 0), 0);
+    SX_CHECK_EQ(DStorageIsStatusComplete(status_arr, 0), 0u);
+    SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 0), pending);
     SX_CHECK_EQ(DStorageSubmit(queue), 0);
     SX_CHECK_EQ(DStorageWaitForIdle(queue, 5000), 0);
 
-    SX_CHECK_EQ(DStorageIsStatusComplete(status_arr, 1), 1u);
-    SX_CHECK(DStorageGetStatusHResult(status_arr, 1) < 0);
+    SX_CHECK_EQ(DStorageIsStatusComplete(status_arr, 0), 1u);
+    SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 0), static_cast<int32_t>(0x80004004u));
     SX_CHECK_EQ(cancel_dst[0], 0xCCu);
 
     DSTORAGE_ERROR_RECORD err{};
     SX_CHECK_EQ(DStorageRetrieveErrorRecord(queue, &err), 0);
-    SX_CHECK_EQ(err.FailureCount, 1u);
+    SX_CHECK_EQ(err.FailureCount, 2u);
     SX_CHECK(err.FirstFailureHResult < 0);
     SX_CHECK_EQ(std::string(err.FailedRequestName), std::string("CancelledRead"));
 
