@@ -170,6 +170,43 @@ int main() {
     SX_CHECK_EQ(cb_val.load(), 42ull);
     SX_CHECK(std::memcmp(dst.data(), original.data(), original.size()) == 0);
 
+    // An open regular file must remain readable after the working directory changes.
+    const auto plain_path = tmp_dir / "plain.bin";
+    {
+        std::ofstream plain(plain_path, std::ios::binary | std::ios::trunc);
+        plain.write(reinterpret_cast<const char*>(original.data()), original.size());
+        SX_CHECK(plain.good());
+    }
+    const auto launch_dir = std::filesystem::current_path();
+    const auto relative_path = plain_path.lexically_relative(launch_dir).string();
+    SX_CHECK(!relative_path.empty());
+    uint64_t plain_file = 0;
+    SX_CHECK_EQ(DStorageOpenFile(factory, relative_path.c_str(), &plain_file), 0);
+    std::vector<uint8_t> first(64), second(64);
+    DSTORAGE_REQUEST plain_req{};
+    plain_req.SourceType = DSTORAGE_REQUEST_SOURCE_FILE;
+    plain_req.SourceFileHandle = plain_file;
+    plain_req.SourceSize = 64;
+    plain_req.DestinationType = DSTORAGE_REQUEST_DESTINATION_MEMORY;
+    plain_req.DestinationSize = 64;
+    plain_req.SourceFileOffset = 3001;
+    plain_req.DestinationMemory = first.data();
+    SX_CHECK_EQ(DStorageEnqueueRequest(queue, &plain_req), 0);
+    plain_req.SourceFileOffset = 71;
+    plain_req.DestinationMemory = second.data();
+    SX_CHECK_EQ(DStorageEnqueueRequest(queue, &plain_req), 0);
+    SX_CHECK_EQ(DStorageEnqueueStatus(queue, status_arr, 2), 0);
+    std::filesystem::current_path(tmp_dir);
+    const auto submit_hr = DStorageSubmit(queue);
+    const auto idle_hr = DStorageWaitForIdle(queue, 5000);
+    std::filesystem::current_path(launch_dir);
+    SX_CHECK_EQ(submit_hr, 0);
+    SX_CHECK_EQ(idle_hr, 0);
+    SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 2), 0);
+    SX_CHECK(std::memcmp(first.data(), original.data() + 3001, first.size()) == 0);
+    SX_CHECK(std::memcmp(second.data(), original.data() + 71, second.size()) == 0);
+    SX_CHECK_EQ(DStorageCloseFile(plain_file), 0);
+
     // 4. Cancellation by tag + error record
     std::vector<uint8_t> cancel_dst(64, 0xCC);
     DSTORAGE_REQUEST cancel_req{};

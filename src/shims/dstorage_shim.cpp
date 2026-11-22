@@ -139,8 +139,9 @@ int32_t DecompressLzRle(
 
 struct FileObject {
     bool is_xvd = false;
-    std::string path;
     uint64_t size = 0;
+    std::mutex stream_mutex;
+    std::ifstream stream;
     scarlettx::XvdContainer xvd;
 };
 
@@ -223,11 +224,14 @@ int32_t ExecuteRequest(const DSTORAGE_REQUEST& req) {
             if (!st.ok()) return kE_FAIL;
         } else {
             raw.resize(req.SourceSize);
-            std::ifstream ifs(file->path, std::ios::binary);
-            if (!ifs) return kE_DSTORAGE_FILE_NOT_FOUND;
-            ifs.seekg(static_cast<std::streamoff>(req.SourceFileOffset), std::ios::beg);
-            ifs.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(req.SourceSize));
-            if (static_cast<uint32_t>(ifs.gcount()) != req.SourceSize) return kE_FAIL;
+            std::lock_guard<std::mutex> lock(file->stream_mutex);
+            auto& stream = file->stream;
+            stream.clear();
+            stream.seekg(static_cast<std::streamoff>(req.SourceFileOffset), std::ios::beg);
+            if (!stream || (req.SourceSize > 0 &&
+                !stream.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(req.SourceSize)))) {
+                return kE_FAIL;
+            }
         }
     } else if (req.SourceType == DSTORAGE_REQUEST_SOURCE_MEMORY) {
         if (!req.SourceMemory) return kE_INVALIDARG;
@@ -371,8 +375,7 @@ int32_t DStorageOpenFile(uint64_t factory, const char* path, uint64_t* out_file)
     if (end_pos < 0) return kE_FAIL;
 
     auto obj = std::make_shared<FileObject>();
-    obj->is_xvd = false;
-    obj->path = path;
+    obj->stream = std::move(ifs);
     obj->size = static_cast<uint64_t>(end_pos);
 
     std::lock_guard<std::mutex> lk(State().mu);
@@ -391,7 +394,6 @@ int32_t DStorageOpenXvdFile(uint64_t factory, const char* xvd_path, uint64_t* ou
 
     auto obj = std::make_shared<FileObject>();
     obj->is_xvd = true;
-    obj->path = xvd_path;
     auto st = obj->xvd.OpenFile(xvd_path);
     if (!st.ok()) return kE_FAIL;
     if (obj->xvd.Header().is_encrypted) return kE_NOTIMPL;
