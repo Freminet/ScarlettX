@@ -2390,6 +2390,28 @@ DXGI_FORMAT NormalizeSwapChainFormat(DXGI_FORMAT fmt) {
     }
 }
 
+bool EnsurePresentCopy(XboxD3D12CommandQueueProxy* obj) {
+    if (!obj->present_alloc &&
+        FAILED(obj->pc_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                       IID_PPV_ARGS(&obj->present_alloc)))) return false;
+    if (!obj->present_list) {
+        if (FAILED(obj->pc_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                     obj->present_alloc, nullptr,
+                                                     IID_PPV_ARGS(&obj->present_list)))) return false;
+        if (FAILED(obj->present_list->Close())) {
+            obj->present_list->Release();
+            obj->present_list = nullptr;
+            return false;
+        }
+    }
+    if (!obj->present_fence &&
+        FAILED(obj->pc_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&obj->present_fence)))) {
+        return false;
+    }
+    if (!obj->present_event) obj->present_event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    return obj->present_event != nullptr;
+}
+
 void DumpResourceToBmp(
     XboxD3D12CommandQueueProxy* obj,
     ID3D12Resource* src_res,
@@ -2428,8 +2450,10 @@ void DumpResourceToBmp(
         return;
     }
 
-    obj->present_alloc->Reset();
-    obj->present_list->Reset(obj->present_alloc, nullptr);
+    if (FAILED(obj->present_alloc->Reset()) || FAILED(obj->present_list->Reset(obj->present_alloc, nullptr))) {
+        rb->Release();
+        return;
+    }
 
     if (cur_state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
         D3D12_RESOURCE_BARRIER b = {};
@@ -2614,18 +2638,6 @@ void EnsurePresentSwapChain(XboxD3D12CommandQueueProxy* obj, UINT w, UINT h, DXG
     sc1->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void**>(&obj->swapchain));
     sc1->Release();
 
-    obj->pc_device->CreateCommandAllocator(
-        D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator),
-        reinterpret_cast<void**>(&obj->present_alloc));
-    if (obj->present_alloc) {
-        obj->pc_device->CreateCommandList(
-            0, D3D12_COMMAND_LIST_TYPE_DIRECT, obj->present_alloc, nullptr,
-            __uuidof(ID3D12GraphicsCommandList), reinterpret_cast<void**>(&obj->present_list));
-        if (obj->present_list) obj->present_list->Close();
-    }
-    obj->pc_device->CreateFence(
-        0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void**>(&obj->present_fence));
-    obj->present_event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
     std::cerr << "[ScarlettX][d3d12_xs] SwapChain created (" << obj->swap_w << "x" << obj->swap_h
               << ", fmt=" << obj->swap_fmt << ", sc=" << obj->swapchain << ")\n";
 }
@@ -2655,7 +2667,11 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
 
     if (src_proxy && src_proxy->pc_res && obj && obj->pc_device && obj->pc_queue) {
         const D3D12_RESOURCE_DESC sdesc = src_proxy->pc_res->GetDesc();
-        EnsurePresentSwapChain(obj, static_cast<UINT>(sdesc.Width), sdesc.Height, sdesc.Format);
+        const char* headless_setting = std::getenv("SCARLETTX_HEADLESS");
+        const bool headless = headless_setting && headless_setting[0] == '1';
+        if (!headless) {
+            EnsurePresentSwapChain(obj, static_cast<UINT>(sdesc.Width), sdesc.Height, sdesc.Format);
+        }
 
         const auto cur_state = static_cast<D3D12_RESOURCE_STATES>(
             src_proxy->tracked_state.load(std::memory_order_relaxed));
@@ -2668,8 +2684,8 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
         const auto source_state = multisampled ? D3D12_RESOURCE_STATE_RESOLVE_SOURCE : D3D12_RESOURCE_STATE_COPY_SOURCE;
         const auto dest_state = multisampled ? D3D12_RESOURCE_STATE_RESOLVE_DEST : D3D12_RESOURCE_STATE_COPY_DEST;
 
-        if (sdesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-            (multisampled ? can_resolve : can_copy) && obj->swapchain && obj->present_alloc && obj->present_list &&
+        if (!headless && sdesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+            (multisampled ? can_resolve : can_copy) && obj->swapchain && EnsurePresentCopy(obj) &&
             WaitForPresentCopy(obj) &&
             MatchPresentBackBuffers(obj, static_cast<UINT>(sdesc.Width), sdesc.Height, format) &&
             SUCCEEDED(obj->present_alloc->Reset()) &&
@@ -2775,7 +2791,7 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
                 return frames;
             }();
             if (std::find(dump_frames.begin(), dump_frames.end(), static_cast<uint64_t>(n)) != dump_frames.end() &&
-                WaitForPresentCopy(obj)) {
+                EnsurePresentCopy(obj) && WaitForPresentCopy(obj)) {
                 DumpResourceToBmp(obj, src_proxy->pc_res, cur_state, std::string(dump_path) + "_" + std::to_string(n) + ".bmp");
             }
         }

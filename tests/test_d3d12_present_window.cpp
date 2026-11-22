@@ -13,6 +13,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
 
 namespace {
 
@@ -67,7 +70,9 @@ DWORD WINAPI Watchdog(void*) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    const bool headless = argc > 1 && std::strcmp(argv[1], "--headless") == 0;
+    _putenv_s("SCARLETTX_HEADLESS", headless ? "1" : "0");
     // Select the guest-facing proxies (also set by CTest for this test).
     _putenv_s("SCARLETTX_REAL_TITLE", "1");
 
@@ -107,6 +112,27 @@ int main() {
     uint64_t plane[8] = {};
     plane[1] = 1;
     plane[2] = reinterpret_cast<uint64_t>(frame);
+
+    if (headless) {
+        SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
+        SX_REQUIRE(FindPresentWindow() == nullptr);
+        const std::string prefix = "headless-present-" + std::to_string(GetCurrentProcessId());
+        _putenv_s("SCARLETTX_DUMP_FRAME", prefix.c_str());
+        _putenv_s("SCARLETTX_DUMP_FRAME_AT", "2");
+        SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
+        SX_REQUIRE(FindPresentWindow() == nullptr);
+        const auto path = prefix + "_2.bmp";
+        std::ifstream bmp(path, std::ios::binary);
+        char magic[2]{};
+        SX_REQUIRE(bmp.read(magic, sizeof(magic)) && magic[0] == 'B' && magic[1] == 'M');
+        bmp.close();
+        SX_REQUIRE(std::filesystem::file_size(path) == 54 + td.Width * td.Height * 3);
+        SX_REQUIRE(std::filesystem::remove(path));
+        SX_REQUIRE(Call(frame, kRelease) == 0);
+        SX_REQUIRE(Call(queue, kRelease) == 0);
+        SX_REQUIRE(Call(device, kRelease) == 0);
+        return 0;
+    }
 
     SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
 
