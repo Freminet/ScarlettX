@@ -13,6 +13,7 @@ struct EmulatorConfig {
     bool enable_debug_layer = false;
     bool trace = false;
     bool stats = false;
+    int32_t fps_cap = -1;  // --fcap: frames per second, 0 = no cap, -1 = the title's own rate
     bool in_process = false;
     bool force_relocate = false;
     uint32_t render_width = 320;

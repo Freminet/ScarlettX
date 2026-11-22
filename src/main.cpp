@@ -1,4 +1,5 @@
 #include <charconv>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -10,10 +11,10 @@
 namespace {
 
 void PrintUsage() {
-    std::cout << "ScarlettX — Xbox Series X|S (Scarlett) HLE Emulator\n"
+    std::cout << "ScarlettX - Xbox Series X|S (Scarlett) HLE Emulator\n"
               << "Usage:\n"
               << "  scarlettx inspect <package_dir>\n"
-              << "  scarlettx boot <package_dir> [--headless] [--in-process] [--gpu|--warp] [--trace] [--stats] [--force-relocate] [--frames N] [--rt-dump path.ppm] [--raster-dump path.ppm]\n"
+              << "  scarlettx boot <package_dir> [--headless] [--in-process] [--gpu|--warp] [--trace] [--stats] [--fcap N] [--force-relocate] [--frames N] [--rt-dump path.ppm] [--raster-dump path.ppm]\n"
               << "  scarlettx diag\n";
 }
 
@@ -78,6 +79,14 @@ int main(int argc, char** argv) {
                 cfg.trace = true;
             } else if (arg == "--stats") {
                 cfg.stats = true;
+            } else if (arg == "--fcap" && i + 1 < argc) {
+                char* end = nullptr;
+                const unsigned long cap = std::strtoul(argv[++i], &end, 10);
+                if (end == argv[i] || *end != '\0' || cap > 100000) {
+                    std::cerr << "[boot] --fcap needs a frame rate (0 = no cap), got '" << argv[i] << "'\n";
+                    return 1;
+                }
+                cfg.fps_cap = static_cast<int32_t>(cap);
             } else if (arg == "--force-relocate") {
                 cfg.force_relocate = true;
             } else if (arg == "--frames" || arg == "--rt-dump" || arg == "--raster-dump") {
@@ -101,7 +110,8 @@ int main(int argc, char** argv) {
                     cfg.raster_dump_path = value;
                 }
             } else {
-                std::cerr << "[boot] Unknown option " << arg << "\n";
+                std::cerr << "[boot] Unknown or incomplete option: " << arg << "\n";
+                PrintUsage();
                 return 1;
             }
         }

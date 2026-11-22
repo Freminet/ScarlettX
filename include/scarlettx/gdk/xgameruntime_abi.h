@@ -464,6 +464,31 @@ SCARLETTX_XGR_API XGameResult XGameSaveEnumerateBlobInfo(
     XGameSaveBlobInfoCallback* callback);
 
 // ---------------------------------------------------------------------------
+// XGameSaveFiles.h
+// ---------------------------------------------------------------------------
+// The folder is a host directory the title reads and writes with ordinary
+// file I/O. The result has no trailing separator.
+SCARLETTX_XGR_API XGameResult XGameSaveFilesGetFolderWithUiAsync(
+    XUserHandle requestingUser,
+    const char* configurationId,
+    XAsyncBlock* async);
+SCARLETTX_XGR_API XGameResult XGameSaveFilesGetFolderWithUiResult(
+    XAsyncBlock* async,
+    size_t folderSize,
+    char* folderResult);
+SCARLETTX_XGR_API XGameResult XGameSaveFilesGetRemainingQuota(
+    XUserHandle userContext,
+    const char* configurationId,
+    int64_t* remainingQuota);
+
+// ---------------------------------------------------------------------------
+// XPackage.h
+// ---------------------------------------------------------------------------
+// The host user's locale name ("en-US"), matched against the languages the
+// package declares when there are any. SCARLETTX_LOCALE overrides it.
+SCARLETTX_XGR_API XGameResult XPackageGetUserLocale(size_t localeSize, char* locale);
+
+// ---------------------------------------------------------------------------
 // XMem.h (GDK Memory & Unified Virtual Memory Hooks)
 // ---------------------------------------------------------------------------
 typedef void*(SCARLETTX_GDK_CALLBACK XMemAllocFunction)(
@@ -483,11 +508,14 @@ SCARLETTX_XGR_API XGameResult XMemSetAllocationHooks(
 SCARLETTX_XGR_API XGameResult XMemGetAllocationHooks(
     XMemAllocFunction** allocFunc,
     XMemFreeFunction** freeFunc);
+// Parameter order checked against the console xmem.dll and a title's calls:
+// VirtualAlloc with the XMem flags inserted before the protection.
 SCARLETTX_XGR_API void* XMemVirtualAlloc(
-    void* baseAddress,
-    size_t size,
-    uint32_t allocationType,
-    uint32_t protect);
+    void* lpAddress,
+    size_t dwSize,
+    uint32_t flAllocationType,
+    uint64_t dwXMemFlags,
+    uint32_t flProtect);
 SCARLETTX_XGR_API bool XMemVirtualFree(
     void* address,
     size_t size,

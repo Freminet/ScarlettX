@@ -74,6 +74,30 @@ int main() {
     SX_REQUIRE(results[0].bytes_read == 13);
     SX_REQUIRE(std::string(dst.begin(), dst.end()) == "DIRECTSTORAGE");
 
+    // A nested mount shadows the same path on the drive mount in either registration order.
+    const auto parent_packs = tmp_dir / "packs";
+    const auto nested_packs = tmp_dir / "override";
+    std::filesystem::create_directories(parent_packs);
+    std::filesystem::create_directories(nested_packs);
+    std::ofstream(parent_packs / "asset.bin", std::ios::binary) << "parent";
+    std::ofstream(nested_packs / "asset.bin", std::ios::binary) << "nested";
+
+    for (bool nested_first : {false, true}) {
+        scarlettx::PackageVfs overlapping;
+        if (nested_first) {
+            SX_REQUIRE(overlapping.MountDirectory("G:\\packs", nested_packs.string()).ok());
+        }
+        SX_REQUIRE(overlapping.MountDirectory("G:", tmp_dir.string()).ok());
+        if (!nested_first) {
+            SX_REQUIRE(overlapping.MountDirectory("G:\\packs", nested_packs.string()).ok());
+        }
+        std::vector<uint8_t> bytes;
+        SX_REQUIRE(overlapping.ReadFileBytes("g:/packs/asset.bin", bytes).ok());
+        SX_REQUIRE(std::string(bytes.begin(), bytes.end()) == "nested");
+        SX_REQUIRE(overlapping.ReadFileBytes("G:/asset.bin", bytes).ok());
+        SX_REQUIRE(std::string(bytes.begin(), bytes.end()) == "SCARLETTX_DIRECTSTORAGE_PAYLOAD");
+    }
+
     std::cout << "[test_kernel_hle] PASSED\n";
     return 0;
 }

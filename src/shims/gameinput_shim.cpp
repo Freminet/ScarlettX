@@ -563,6 +563,7 @@ void ReadHostGamepad(GAMEINPUT_GAMEPAD_STATE* out) {
         {VK_TAB, GAMEINPUT_GAMEPAD_VIEW},       {'P', GAMEINPUT_GAMEPAD_MENU},
     };
     for (const auto& k : kKeys) {
+        if (k.key == VK_RETURN && down(VK_MENU)) continue;
         if (down(k.key)) out->Buttons |= k.gameinput;
     }
     const auto stick = [&](int negative, int positive, float* value) {

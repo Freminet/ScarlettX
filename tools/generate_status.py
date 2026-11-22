@@ -182,8 +182,8 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
     xa_cnt = (
         count_exported_symbols(xa_hdr, "SCARLETTX_XAUDIO2_API", "XAudio2")
         + count_exported_symbols(xa_hdr, "SCARLETTX_XAUDIO2_API", "Xma2")
-        + count_exported_symbols(acp_hdr, "SCARLETTX_ACPHAL_API", "Apu")
-        + count_exported_symbols(acp_hdr, "SCARLETTX_ACPHAL_API", "AcpHal")
+        + count_exported_symbols(acp_hdr, "SCARLETTX_ACP_API", "Apu")
+        + count_exported_symbols(acp_hdr, "SCARLETTX_ACP_API", "AcpHal")
     )
     gi_cnt = count_exported_symbols(gi_hdr, "SCARLETTX_GAMEINPUT_API", "GameInput")
     bink_cnt = count_exported_symbols(bink_hdr, "SCARLETTX_BINK2_API", "Bink")
@@ -252,7 +252,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             short_name="Save",
             category="xgameruntime",
             implemented=xgamesave_cnt,
-            target=22,
+            target=30,
             notes=f"{xgamesave_cnt} exports; disk-backed containers, sync/async blob R/W, quota, delete",
         ),
         Subsystem(
@@ -306,7 +306,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             short_name="Audio",
             category="Media",
             implemented=xa_cnt,
-            target=32,
+            target=42,
             notes=(
                 f"{xa_cnt} exports (XAudio2_9 ordinal #1 + AcpHal.dll APU/SHAPE shims); "
                 "headless PCM mixer, WAV writer, fail-closed real-title COM guard, synthetic XMA2 test decoder"
@@ -320,7 +320,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             target=16,
             notes=(
                 f"{gi_cnt} exports; virtual Xbox Series controller & keyboard, reading history "
-                "(Current/Next/Previous), state injection, 4-motor rumble state (stored, not sent to the host controller)"
+                "(Current/Next/Previous), state injection, rumble forwarded to the host controller's two main motors"
             ),
         ),
         Subsystem(
@@ -447,23 +447,23 @@ def collect_concept_destruction_metrics() -> list[Subsystem]:
             category="Graphics",
             implemented=8,
             target=10,
-            notes="Command lists run through gameplay with no Close failure or device removal; slot 83 handled as a texture-region copy (name unverified), slot 67 still E_NOTIMPL",
+            notes="Command lists run through gameplay with no Close failure or device removal; slot 83 is CopyTextureRegionX, the texture upload; slot 67 (FlushPipelineX) still E_NOTIMPL",
         ),
         Subsystem(
             name="Presentation & First Frame",
             short_name="Pres",
             category="Graphics",
-            implemented=4,
+            implemented=5,
             target=5,
-            notes="PresentX window on its own thread, real 1920x1080 frames; on a hardware GPU about 105 fps at 2,400 draws per frame; the title's frame interval is ignored (uncapped) and Alt+Enter fullscreen freezes the picture",
+            notes="PresentX window on its own thread, real 1920x1080 frames; on a hardware GPU about 105 fps at 2,400 draws per frame; Alt+Enter toggles borderless fullscreen; frames are paced to the title's interval, or to --fcap N",
         ),
         Subsystem(
             name="Audio & Input (Runtime)",
             short_name="Aud/In",
             category="Media",
-            implemented=3,
+            implemented=4,
             target=4,
-            notes="Guest-facing XAudio2 objects forwarding to the host XAudio2 2.9, sound audible in play; GameInput polling verified for A, B, D-pad, left stick, right trigger, and with a real Xbox controller; rumble is not forwarded to the controller",
+            notes="Guest-facing XAudio2 objects forwarding to the host XAudio2 2.9, sound audible in play; GameInput polling verified for A, B, D-pad, left stick, right trigger, and with a real Xbox controller; rumble reaches the controller",
         ),
         Subsystem(
             name="In-Game & Playable",
@@ -989,8 +989,8 @@ def main() -> None:
         badges=cd_badges,
         heading_prefix="Status of the game Concept Destruction",
         callout_lead="Open issues:",
-        callout_line1="Alt+Enter fullscreen freezes the picture; frame pacing is uncapped; rumble is not sent",
-        callout_line2="to the controller; CmdList slot 67 is unimplemented.",
+        callout_line1="CmdList slot 67 (FlushPipelineX) is unimplemented and",
+        callout_line2="XUserGetTokenAndSignatureAsync returns E_NOTIMPL.",
     )
 
     html_doc = render_html(subsystems, total_exports, tests_text, tests_ok)

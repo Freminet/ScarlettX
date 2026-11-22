@@ -75,6 +75,43 @@ SCARLETTX_XCURL_API curl_slist* curl_slist_append(curl_slist* list, const char* 
 SCARLETTX_XCURL_API void curl_slist_free_all(curl_slist* list);
 SCARLETTX_XCURL_API const char* curl_version(void);
 
+// Multi interface (standard libcurl signatures and values).
+typedef void CURLM;
+typedef int32_t CURLMcode;
+
+enum {
+    CURLM_OK = 0,
+    CURLM_BAD_HANDLE = 1,
+    CURLM_BAD_EASY_HANDLE = 2,
+    CURLM_ADDED_ALREADY = 7
+};
+
+enum { CURLMSG_DONE = 1 };
+
+typedef struct CURLMsg {
+    int32_t msg;
+    CURL* easy_handle;
+    union {
+        void* whatever;
+        CURLcode result;
+    } data;
+} CURLMsg;
+
+struct curl_waitfd;
+
+SCARLETTX_XCURL_API CURLM* curl_multi_init(void);
+SCARLETTX_XCURL_API CURLMcode curl_multi_add_handle(CURLM* multi, CURL* curl);
+SCARLETTX_XCURL_API CURLMcode curl_multi_remove_handle(CURLM* multi, CURL* curl);
+SCARLETTX_XCURL_API CURLMcode curl_multi_perform(CURLM* multi, int* running_handles);
+SCARLETTX_XCURL_API CURLMsg* curl_multi_info_read(CURLM* multi, int* msgs_in_queue);
+SCARLETTX_XCURL_API CURLMcode curl_multi_poll(
+    CURLM* multi,
+    struct curl_waitfd* extra_fds,
+    unsigned int extra_nfds,
+    int timeout_ms,
+    int* numfds);
+SCARLETTX_XCURL_API CURLMcode curl_multi_cleanup(CURLM* multi);
+
 // Deterministic offline mock registration for ScarlettX tests & offline play
 SCARLETTX_XCURL_API CURLcode xcurl_register_mock_response(
     const char* url_prefix,

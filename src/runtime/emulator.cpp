@@ -23,6 +23,14 @@ std::mutex g_boot_mutex;
 
 class BootEnvironment {
 public:
+    BootEnvironment() {
+        char buffer[MAX_PATH] = {};
+        const DWORD length = GetCurrentDirectoryA(MAX_PATH, buffer);
+        if (length > 0 && length < MAX_PATH) {
+            previous_working_directory_ = buffer;
+        }
+    }
+
     void Set(const char* name, const char* value) {
         Entry entry;
         entry.name = name;
@@ -48,6 +56,9 @@ public:
             SetEnvironmentVariableW(entry->wide_name.c_str(),
                                     entry->windows_value ? entry->windows_value->c_str() : nullptr);
         }
+        if (previous_working_directory_) {
+            SetCurrentDirectoryA(previous_working_directory_->c_str());
+        }
     }
 
 private:
@@ -58,6 +69,7 @@ private:
         std::optional<std::wstring> windows_value;
     };
     std::vector<Entry> entries_;
+    std::optional<std::string> previous_working_directory_;
 };
 #endif
 
@@ -166,6 +178,7 @@ Status Emulator::BootPackage(const std::string& package_dir) {
     environment.Set("SCARLETTX_PREFER_WARP", config_.prefer_warp ? "1" : "0");
     environment.Set("SCARLETTX_TRACE", config_.trace ? "1" : "0");
     environment.Set("SCARLETTX_STATS", config_.stats ? "1" : "0");
+    environment.Set("SCARLETTX_FCAP", std::to_string(config_.fps_cap).c_str());
     if (!report.config.title_id.empty()) {
         environment.Set("SCARLETTX_TITLE_ID", report.config.title_id.c_str());
     }
@@ -176,7 +189,8 @@ Status Emulator::BootPackage(const std::string& package_dir) {
     struct VirtualDriveGuard {
         ~VirtualDriveGuard() { vfs::UnmapPackageDrive(); }
     } g_drive_guard;
-    if (vfs::MapPackageDrive('G', abs_pkg_dir)) {
+    const bool drive_mapped = vfs::MapPackageDrive('G', abs_pkg_dir);
+    if (drive_mapped) {
         std::cout << "[ScarlettX][vfs] Mapped virtual G:\\ -> " << abs_pkg_dir << "\n";
     }
 
@@ -228,6 +242,8 @@ Status Emulator::BootPackage(const std::string& package_dir) {
             call_st = image.CallExportedEntry(config_.in_process_entry, exit_code);
         } else {
             environment.Set("SCARLETTX_REAL_TITLE", "1");
+            // A title's relative paths start at its package root, as on the console.
+            SetCurrentDirectoryA(drive_mapped ? "G:\\" : abs_pkg_dir.c_str());
             std::cout << "[ScarlettX][loader] Entering native PE entry point at "
                       << image.EntryPointAddress() << std::endl;
             call_st = image.CallEntryPoint(exit_code);
@@ -249,8 +265,20 @@ Status Emulator::BootPackage(const std::string& package_dir) {
     std::string cmd = "\"" + report.executable_path + "\"";
     std::string work_dir = std::filesystem::path(report.executable_path).parent_path().string();
 
-    if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr,
-                        work_dir.c_str(), &si, &pi)) {
+    // The guest inherits this: if it cannot load it must end with an exit
+    // code instead of waiting on a system error dialog.
+    const UINT previous_error_mode = SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    // Searched before System32 and inherited by the child; PATH is not.
+    if (!shim_dir.empty()) {
+        SetDllDirectoryA(shim_dir.c_str());
+    }
+    const BOOL created = CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                                        work_dir.c_str(), &si, &pi);
+    if (!shim_dir.empty()) {
+        SetDllDirectoryA(nullptr);
+    }
+    SetErrorMode(previous_error_mode);
+    if (!created) {
         return Status::Error(StatusCode::DeviceError,
                              "CreateProcessA failed for guest executable: " + report.executable_path);
     }

@@ -38,6 +38,21 @@ constexpr Guid kIidUserGamertag = {0xCEF4FAC0u, 0x7676u, 0x4A94u, {0xA1, 0x19, 0
 constexpr Guid kApiGameSave = {0x704C3F58u, 0xE629u, 0x4CC2u, {0xB1, 0x97, 0x30, 0x51, 0x1B, 0x99, 0x6F, 0xE2}};
 // XSystemGetConsoleId, XSystemGetXboxLiveSandboxId.
 constexpr Guid kApiSystem = {0xE349BD1Au, 0xFC20u, 0x4E40u, {0xB9, 0x9C, 0x41, 0x78, 0xCC, 0x6B, 0x40, 0x9F}};
+// Interface ids a title built against a later GDK asks for instead of the
+// API's own id. Its calls (XGame slot 3; XUser slots 3, 4, 7, 8, 9, 11, 23,
+// 24, 25, 34) pass the same arguments as the main tables take.
+constexpr Guid kIidGameLater = {0x2549F142u, 0x6419u, 0x4A06u, {0x97, 0xB5, 0x93, 0x1A, 0xAB, 0x7C, 0x2F, 0x34}};
+constexpr Guid kIidUserLater = {0x079415E3u, 0x6727u, 0x437Fu, {0x8E, 0x9D, 0x8F, 0x8F, 0x9B, 0x24, 0x39, 0xF7}};
+// For these the console object answers both ids with one table.
+constexpr Guid kIidGameSaveLater = {0x704C3F58u, 0xE629u, 0x4CC2u, {0xB1, 0x97, 0x30, 0x51, 0x1B, 0x99, 0x6E, 0xE2}};
+constexpr Guid kIidSystemLater = {0x67CE4BFCu, 0xB1D1u, 0x4AC7u, {0xBC, 0x3A, 0xCB, 0x92, 0x19, 0xA9, 0x7A, 0x85}};
+// XGameRuntimeIsFeatureAvailable.
+constexpr Guid kApiFeature = {0x8836FE87u, 0xEDB9u, 0x4FE3u, {0x8D, 0xAD, 0x05, 0xF0, 0xD2, 0xCD, 0x5B, 0x40}};
+// XGameEventWrite.
+constexpr Guid kApiGameEvent = {0xBBFBDCC7u, 0xBFE7u, 0x409Bu, {0xA5, 0xCA, 0xED, 0xF0, 0x54, 0x96, 0x0B, 0x4D}};
+// XPackage, and the latest of the interface ids its console object answers.
+constexpr Guid kApiPackage = {0xAF406016u, 0xE850u, 0x4AA8u, {0xA8, 0x8D, 0x2F, 0x3D, 0xCB, 0x9D, 0xAC, 0x7E}};
+constexpr Guid kIidPackageLater = {0xF92D8712u, 0x2B27u, 0x4D8Au, {0xBF, 0x01, 0x11, 0xA6, 0xF8, 0xE3, 0xEB, 0x42}};
 
 constexpr XGameResult kNoInterface = static_cast<XGameResult>(0x80004002u);
 constexpr XGameResult kNotImplemented = static_cast<XGameResult>(0x80004001u);
@@ -309,7 +324,9 @@ const Slot kUserGamertagVtbl[] = {
 // {704C3F58}: XGameSave, in the declaration order of the public XGameSave.h.
 // The console code names slots 3, 7, 13, 14, 15, 18, 19 and 20 in its error
 // reports, and the order of the others was matched by argument shape.
-constexpr int kGameSaveSlots = 30;
+// Slots 30-32 are XGameSaveFiles.h in the same way: the console names slot
+// 32, and a title's calls to 30 and 31 pass the Async/Result arguments.
+constexpr int kGameSaveSlots = 33;
 constexpr const char* kGameSaveSlotNames[kGameSaveSlots] = {
     "QueryInterface", "AddRef", "Release",
     "XGameSaveInitializeProvider", "XGameSaveInitializeProviderAsync", "XGameSaveInitializeProviderResult",
@@ -321,6 +338,8 @@ constexpr const char* kGameSaveSlotNames[kGameSaveSlots] = {
     "XGameSaveReadBlobDataAsync", "XGameSaveReadBlobDataResult", "XGameSaveCreateUpdate",
     "XGameSaveCloseUpdate", "XGameSaveSubmitBlobWrite", "XGameSaveSubmitBlobDelete",
     "XGameSaveSubmitUpdate", "XGameSaveSubmitUpdateAsync", "XGameSaveSubmitUpdateResult",
+    "XGameSaveFilesGetFolderWithUiAsync", "XGameSaveFilesGetFolderWithUiResult",
+    "XGameSaveFilesGetRemainingQuota",
 };
 
 template <int Index>
@@ -488,6 +507,28 @@ XGameResult SCARLETTX_GDK_CALLBACK SaveSubmitUpdateResult(void*, XAsyncBlock* as
     return XGameSaveSubmitUpdateResult(async);
 }
 
+XGameResult SCARLETTX_GDK_CALLBACK SaveFilesGetFolderWithUiAsync(void*, XUserHandle user, const char* configuration_id,
+                                                                 XAsyncBlock* async) {
+    const XGameResult hr = XGameSaveFilesGetFolderWithUiAsync(user, configuration_id, async);
+    TraceGameSave("XGameSaveFilesGetFolderWithUiAsync", hr);
+    return hr;
+}
+
+XGameResult SCARLETTX_GDK_CALLBACK SaveFilesGetFolderWithUiResult(void*, XAsyncBlock* async, size_t folder_size,
+                                                                  char* folder) {
+    const XGameResult hr = XGameSaveFilesGetFolderWithUiResult(async, folder_size, folder);
+    if (Trace()) {
+        std::fprintf(stderr, "[ScarlettX][xgameruntime] XGameSaveFilesGetFolderWithUiResult -> 0x%08X (%s)\n",
+                     static_cast<unsigned>(hr), hr == XGR_S_OK ? folder : "");
+    }
+    return hr;
+}
+
+XGameResult SCARLETTX_GDK_CALLBACK SaveFilesGetRemainingQuota(void*, XUserHandle user, const char* configuration_id,
+                                                              int64_t* quota) {
+    return XGameSaveFilesGetRemainingQuota(user, configuration_id, quota);
+}
+
 template <size_t... I>
 std::array<Slot, kGameSaveSlots> MakeGameSaveVtbl(std::index_sequence<I...>) {
     std::array<Slot, kGameSaveSlots> vtbl = {reinterpret_cast<Slot>(&GameSaveUnimplemented<static_cast<int>(I)>)...};
@@ -517,14 +558,117 @@ std::array<Slot, kGameSaveSlots> MakeGameSaveVtbl(std::index_sequence<I...>) {
     vtbl[27] = reinterpret_cast<Slot>(&SaveSubmitUpdate);
     vtbl[28] = reinterpret_cast<Slot>(&SaveSubmitUpdateAsync);
     vtbl[29] = reinterpret_cast<Slot>(&SaveSubmitUpdateResult);
+    vtbl[30] = reinterpret_cast<Slot>(&SaveFilesGetFolderWithUiAsync);
+    vtbl[31] = reinterpret_cast<Slot>(&SaveFilesGetFolderWithUiResult);
+    vtbl[32] = reinterpret_cast<Slot>(&SaveFilesGetRemainingQuota);
     return vtbl;
 }
 const std::array<Slot, kGameSaveSlots> kGameSaveVtbl = MakeGameSaveVtbl(std::make_index_sequence<kGameSaveSlots>{});
 
+// {8836FE87} slot 3, the table's only method. The console knows features 0
+// to 21 (the public XGameRuntimeFeature values) and has them all; 10,
+// XNetworking, depends on its network stack being up, which it is here.
+constexpr uint32_t kLastRuntimeFeature = 21;
+
+bool SCARLETTX_GDK_CALLBACK FeatureIsAvailable(void* /*self*/, uint32_t feature) {
+    const bool available = feature <= kLastRuntimeFeature;
+    if (Trace()) {
+        std::fprintf(stderr, "[ScarlettX][xgameruntime] XGameRuntimeIsFeatureAvailable(%u) -> %d\n",
+                     static_cast<unsigned>(feature), available ? 1 : 0);
+    }
+    return available;
+}
+
+const Slot kFeatureVtbl[] = {
+    reinterpret_cast<Slot>(&TableQueryInterface),
+    reinterpret_cast<Slot>(&TableAddRef),
+    reinterpret_cast<Slot>(&TableRelease),
+    reinterpret_cast<Slot>(&FeatureIsAvailable),
+};
+
+// {BBFBDCC7} slot 3, the table's only method. There is no service to send
+// the event to, so it is accepted and dropped.
+XGameResult SCARLETTX_GDK_CALLBACK GameEventWrite(void* /*self*/, XUserHandle user, const char* /*service_config_id*/,
+                                                  const char* /*play_session_id*/, const char* event_name,
+                                                  const char* /*dimensions_json*/, const char* /*measurements_json*/) {
+    const XGameResult hr = user && event_name ? XGR_S_OK : XGR_E_INVALIDARG;
+    if (Trace()) {
+        std::fprintf(stderr, "[ScarlettX][xgameruntime] XGameEventWrite(%s) -> 0x%08X\n",
+                     event_name ? event_name : "<null>", static_cast<unsigned>(hr));
+    }
+    return hr;
+}
+
+const Slot kGameEventVtbl[] = {
+    reinterpret_cast<Slot>(&TableQueryInterface),
+    reinterpret_cast<Slot>(&TableAddRef),
+    reinterpret_cast<Slot>(&TableRelease),
+    reinterpret_cast<Slot>(&GameEventWrite),
+};
+
+// {AF406016}: XPackage. The console object answers seven interface ids with
+// one 39-entry table. Three methods are identified, by a title's calls and
+// by the console code behind the slot; in the console table 20, 28 and 35
+// are one function, as are 21, 29 and 36. The rest log the call and fail.
+//   11       XPackageGetUserLocale(size, buffer)
+//   20/28/35 XPackageEnumeratePackages(kind, scope, context, callback)
+//   21/29/36 XPackageRegisterPackageInstalled(queue, context, callback, token)
+constexpr int kPackageSlots = 39;
+
+template <int Index>
+XGameResult SCARLETTX_GDK_CALLBACK PackageUnimplemented(void* /*self*/, uintptr_t a1, uintptr_t a2, uintptr_t a3) {
+    return LogUnimplemented("XPackage", "AF406016", Index, a1, a2, a3);
+}
+
+XGameResult SCARLETTX_GDK_CALLBACK PackageGetUserLocale(void* /*self*/, size_t size, char* locale) {
+    const XGameResult hr = XPackageGetUserLocale(size, locale);
+    if (Trace()) {
+        std::fprintf(stderr, "[ScarlettX][xgameruntime] XPackageGetUserLocale -> 0x%08X (%s)\n",
+                     static_cast<unsigned>(hr), hr == XGR_S_OK ? locale : "");
+    }
+    return hr;
+}
+
+// Only the running package is installed, and it is not reported: a title
+// enumerates to find its add-on content, and there is none.
+XGameResult SCARLETTX_GDK_CALLBACK PackageEnumeratePackages(void* /*self*/, uint32_t kind, uint32_t scope,
+                                                            void* /*context*/, void* callback) {
+    if (Trace()) {
+        std::fprintf(stderr, "[ScarlettX][xgameruntime] XPackageEnumeratePackages(kind=%u, scope=%u) -> no packages\n",
+                     static_cast<unsigned>(kind), static_cast<unsigned>(scope));
+    }
+    return callback ? XGR_S_OK : XGR_E_INVALIDARG;
+}
+
+// Nothing is ever installed while the title runs, so the callback is never
+// invoked; the registration only hands out a token.
+std::atomic<uint64_t> g_package_installed_tokens{0};
+
+XGameResult SCARLETTX_GDK_CALLBACK PackageRegisterPackageInstalled(void* /*self*/, XTaskQueueHandle /*queue*/,
+                                                                   void* /*context*/, void* callback,
+                                                                   XTaskQueueRegistrationToken* token) {
+    if (!callback || !token) return XGR_E_INVALIDARG;
+    token->token = g_package_installed_tokens.fetch_add(1, std::memory_order_relaxed) + 1;
+    return XGR_S_OK;
+}
+
+template <size_t... I>
+std::array<Slot, kPackageSlots> MakePackageVtbl(std::index_sequence<I...>) {
+    std::array<Slot, kPackageSlots> vtbl = {reinterpret_cast<Slot>(&PackageUnimplemented<static_cast<int>(I)>)...};
+    vtbl[0] = reinterpret_cast<Slot>(&TableQueryInterface);
+    vtbl[1] = reinterpret_cast<Slot>(&TableAddRef);
+    vtbl[2] = reinterpret_cast<Slot>(&TableRelease);
+    vtbl[11] = reinterpret_cast<Slot>(&PackageGetUserLocale);
+    for (int slot : {20, 28, 35}) vtbl[slot] = reinterpret_cast<Slot>(&PackageEnumeratePackages);
+    for (int slot : {21, 29, 36}) vtbl[slot] = reinterpret_cast<Slot>(&PackageRegisterPackageInstalled);
+    return vtbl;
+}
+const std::array<Slot, kPackageSlots> kPackageVtbl = MakePackageVtbl(std::make_index_sequence<kPackageSlots>{});
+
 // Discovery table for API ids nothing implements, enabled with
 // SCARLETTX_XGR_DISCOVER=1: every method logs its slot and first arguments
 // and fails, so a trace shows which slots a title uses.
-constexpr int kDiscoverySlots = 64;
+constexpr int kDiscoverySlots = 96;
 
 template <int Index>
 XGameResult SCARLETTX_GDK_CALLBACK DiscoverySlot(void* self, uintptr_t a1, uintptr_t a2, uintptr_t a3) {
@@ -564,14 +708,19 @@ const Slot* FindVtbl(const void* api_id, const void* riid, Guid* iid) {
     // An API's main interface has the API's own id.
     const bool main = std::memcmp(api_id, riid, sizeof(Guid)) == 0 || Equal(riid, kIidIUnknown);
     std::memcpy(iid, main ? api_id : riid, sizeof(Guid));
-    if (Equal(api_id, kApiGame)) return main ? kGameVtbl : nullptr;
-    if (Equal(api_id, kApiSystem)) return main ? kSystemVtbl : nullptr;
-    if (Equal(api_id, kApiGameSave)) return main ? kGameSaveVtbl.data() : nullptr;
+    if (Equal(api_id, kApiGame)) return main || Equal(riid, kIidGameLater) ? kGameVtbl : nullptr;
+    if (Equal(api_id, kApiSystem)) return main || Equal(riid, kIidSystemLater) ? kSystemVtbl : nullptr;
+    if (Equal(api_id, kApiGameSave)) return main || Equal(riid, kIidGameSaveLater) ? kGameSaveVtbl.data() : nullptr;
     if (Equal(api_id, kApiUser)) {
-        if (main) return kUserVtbl.data();
+        if (main || Equal(riid, kIidUserLater)) return kUserVtbl.data();
         return Equal(riid, kIidUserGamertag) ? kUserGamertagVtbl : nullptr;
     }
-    return main && DiscoveryEnabled() ? kDiscoveryVtbl.data() : nullptr;
+    if (Equal(api_id, kApiFeature)) return main ? kFeatureVtbl : nullptr;
+    if (Equal(api_id, kApiGameEvent)) return main ? kGameEventVtbl : nullptr;
+    if (Equal(api_id, kApiPackage)) return main || Equal(riid, kIidPackageLater) ? kPackageVtbl.data() : nullptr;
+    // An API nothing implements: titles ask for it by a later interface id
+    // as often as by its own.
+    return DiscoveryEnabled() ? kDiscoveryVtbl.data() : nullptr;
 }
 
 }  // namespace

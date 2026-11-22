@@ -3,9 +3,11 @@
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "scarlettx/loader/pe_loader.h"
 #include "scarlettx/loader/pe_mapper.h"
@@ -145,6 +147,54 @@ int main() {
         SX_REQUIRE(unwind_base == mapped.MappedBase());
     }
 
+    // A section table or relocation data that overruns the file or image is rejected.
+    {
+        std::ifstream in(probe_dll, std::ios::binary);
+        const std::vector<char> good((std::istreambuf_iterator<char>(in)),
+                                     std::istreambuf_iterator<char>());
+        const auto nt_of = [](std::vector<char>& pe) {
+            return reinterpret_cast<IMAGE_NT_HEADERS64*>(
+                pe.data() + reinterpret_cast<const IMAGE_DOS_HEADER*>(pe.data())->e_lfanew);
+        };
+        const std::filesystem::path bad_dll =
+            std::filesystem::path(SCARLETTX_BINARY_DIR) / "iat_probe_malformed.dll";
+        const auto map_bytes = [&](const std::vector<char>& pe) {
+            std::ofstream(bad_dll, std::ios::binary)
+                .write(pe.data(), static_cast<std::streamsize>(pe.size()));
+            scarlettx::MappedPeImage bad;
+            return bad.MapFile(bad_dll.string(), redirects, hle_reg, opts);
+        };
+
+        auto bad_sections = good;
+        nt_of(bad_sections)->FileHeader.NumberOfSections = 0xFFFF;
+        SX_REQUIRE(map_bytes(bad_sections).message == "Truncated section table");
+
+        auto bad_block = good;
+        const auto* nt = nt_of(bad_block);
+        const DWORD reloc_rva =
+            nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress;
+        size_t block_at = 0;
+        const auto* sec = IMAGE_FIRST_SECTION(nt);
+        for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec) {
+            if (reloc_rva >= sec->VirtualAddress &&
+                reloc_rva - sec->VirtualAddress < sec->SizeOfRawData) {
+                block_at = sec->PointerToRawData + (reloc_rva - sec->VirtualAddress);
+            }
+        }
+        SX_REQUIRE(block_at != 0);
+        reinterpret_cast<IMAGE_BASE_RELOCATION*>(bad_block.data() + block_at)->SizeOfBlock =
+            0xFFFFFFF0;
+        SX_REQUIRE(map_bytes(bad_block).message ==
+                   "Relocation block exceeds relocation directory");
+
+        auto bad_dir = good;
+        nt_of(bad_dir)->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress =
+            nt->OptionalHeader.SizeOfImage;
+        SX_REQUIRE(map_bytes(bad_dir).message == "Relocation directory exceeds PE image size");
+
+        std::filesystem::remove(bad_dll);
+    }
+
     // 4.6 Guest C++ exceptions and guest thread-local storage.
     {
         using ProbeThrowFn = int (*)(int);
@@ -221,6 +271,31 @@ int main() {
         std::cerr << "[test_inproc_loader] BootPackage(--in-process) failed: "
                   << boot_st.message << "\n";
         return 1;
+    }
+
+    // 8. An image with stripped relocations must not load away from its preferred base.
+    {
+        const std::filesystem::path fixed_dll =
+            std::filesystem::path(SCARLETTX_BINARY_DIR) / "test_inproc_loader_fixed.dll";
+        std::filesystem::copy_file(probe_dll, fixed_dll,
+                                   std::filesystem::copy_options::overwrite_existing);
+        {
+            std::fstream f(fixed_dll, std::ios::in | std::ios::out | std::ios::binary);
+            IMAGE_DOS_HEADER dos{};
+            IMAGE_NT_HEADERS64 nt{};
+            f.read(reinterpret_cast<char*>(&dos), sizeof(dos));
+            f.seekg(dos.e_lfanew);
+            f.read(reinterpret_cast<char*>(&nt), sizeof(nt));
+            nt.FileHeader.Characteristics |= IMAGE_FILE_RELOCS_STRIPPED;
+            nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC] = {};
+            f.seekp(dos.e_lfanew);
+            f.write(reinterpret_cast<const char*>(&nt), sizeof(nt));
+            SX_REQUIRE(f.good());
+        }
+        scarlettx::MappedPeImage fixed;
+        SX_REQUIRE(!fixed.MapFile(fixed_dll.string(), redirects, hle_reg, opts).ok());
+        SX_REQUIRE(!fixed.IsMapped());
+        std::filesystem::remove(fixed_dll);
     }
 
     std::cout << "[test_inproc_loader] PASSED (relocs=" << mapped.RelocationsApplied()

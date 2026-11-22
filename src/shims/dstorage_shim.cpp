@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstring>
 #include <deque>
 #include <fstream>
@@ -12,6 +13,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "scarlettx/loader/xvd_container.h"
@@ -25,7 +27,6 @@ constexpr int32_t kE_FAIL = static_cast<int32_t>(0x80004005u);
 constexpr int32_t kE_NOTIMPL = static_cast<int32_t>(0x80004001u);
 constexpr int32_t kE_HANDLE = static_cast<int32_t>(0x80070006u);
 constexpr int32_t kE_OUTOFMEMORY = static_cast<int32_t>(0x8007000Eu);
-constexpr int32_t kE_ABORT = static_cast<int32_t>(0x80004004u);
 constexpr int32_t kE_DSTORAGE_FILE_NOT_FOUND = static_cast<int32_t>(0x80070002u);
 constexpr int32_t kE_DSTORAGE_BUFFER_TOO_SMALL = static_cast<int32_t>(0x8007007Au);
 
@@ -194,6 +195,7 @@ struct QueueObject {
     DSTORAGE_ERROR_RECORD error_record{};
     int32_t last_batch_hr = kS_OK;
     std::thread worker;
+    std::thread::id worker_id;
 };
 
 struct DStorageState {
@@ -286,7 +288,7 @@ void QueueWorkerLoop(std::shared_ptr<QueueObject> q) {
         }
 
         if (item.kind == QueueItemKind::kRequest) {
-            int32_t hr = item.cancelled ? kE_ABORT : ExecuteRequest(item.req, item.file);
+            const int32_t hr = item.cancelled ? kS_OK : ExecuteRequest(item.req, item.file);
             if (item.file) {
                 std::lock_guard<std::mutex> lock(item.file->pending_mutex);
                 if (--item.file->pending_reads == 0) item.file->pending_cv.notify_all();
@@ -331,11 +333,11 @@ void QueueWorkerLoop(std::shared_ptr<QueueObject> q) {
         {
             std::lock_guard<std::mutex> lk(q->mu);
             q->busy = false;
-            q->space_cv.notify_all();
             if (q->submitted.empty()) {
                 q->idle_cv.notify_all();
             }
         }
+        q->space_cv.notify_one();
     }
 }
 
@@ -369,10 +371,14 @@ int32_t EnqueueItem(const std::shared_ptr<QueueObject>& q, QueueItem item) {
 
     {
         std::unique_lock<std::mutex> lock(q->mu);
-        q->space_cv.wait(lock, [&] {
-            return q->stop || q->desc.Capacity == 0 ||
+        const auto has_room = [&] {
+            return q->desc.Capacity == 0 ||
                    q->staged.size() + q->submitted.size() + q->busy < q->desc.Capacity;
-        });
+        };
+        if (!q->stop && !has_room() && std::this_thread::get_id() == q->worker_id) {
+            return kE_FAIL;
+        }
+        q->space_cv.wait(lock, [&] { return q->stop || has_room(); });
         if (q->stop) return kE_HANDLE;
         if (array) {
             std::lock_guard<std::mutex> status_lock(array->mu);
@@ -501,6 +507,7 @@ int32_t DStorageCreateQueue(
     q->desc = *desc;
     if (desc->Name) q->name = desc->Name;
     q->worker = std::thread(QueueWorkerLoop, q);
+    q->worker_id = q->worker.get_id();
 
     std::lock_guard<std::mutex> lk(State().mu);
     const uint64_t h = State().next_handle++;
@@ -625,16 +632,15 @@ int32_t DStorageCancelRequestsWithTag(uint64_t queue, uint64_t mask, uint64_t va
         q = it->second;
     }
     std::lock_guard<std::mutex> lk(q->mu);
-    for (auto& item : q->staged) {
-        if (item.kind == QueueItemKind::kRequest && (item.req.CancellationTag & mask) == value) {
-            item.cancelled = true;
+    const auto cancel_matching = [&](std::deque<QueueItem>& items) {
+        for (auto& item : items) {
+            if (item.kind == QueueItemKind::kRequest && (item.req.CancellationTag & mask) == value) {
+                item.cancelled = true;
+            }
         }
-    }
-    for (auto& item : q->submitted) {
-        if (item.kind == QueueItemKind::kRequest && (item.req.CancellationTag & mask) == value) {
-            item.cancelled = true;
-        }
-    }
+    };
+    cancel_matching(q->staged);
+    cancel_matching(q->submitted);
     return kS_OK;
 }
 

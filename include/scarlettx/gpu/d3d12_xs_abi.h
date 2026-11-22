@@ -199,6 +199,19 @@ SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12XboxCreateDevice(
 SCARLETTX_D3D12_API void SCARLETTX_GDK_CALLBACK D3D12XboxSetProcessDebugFlags(
     uint32_t flags);
 SCARLETTX_D3D12_API uint32_t SCARLETTX_GDK_CALLBACK D3D12XboxGetProcessDebugFlags(void);
+
+// Argument of D3D12ConfigureVirtualMemoryX. Layout and checks taken from the
+// console d3d12_xs.dll; the field names are descriptive, not the SDK's.
+struct D3D12XS_VIRTUAL_MEMORY_CONFIG {
+    uint32_t Flags;           // 0 or 1
+    uint32_t SizeIn4MbUnits;  // at most 33
+    uint32_t Option;          // a title passes 0xFFFFFFFF
+    uint32_t Reserved;
+    uint64_t Result0;         // written by the call
+    uint64_t Result1;         // written by the call
+};
+SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12ConfigureVirtualMemoryX(
+    D3D12XS_VIRTUAL_MEMORY_CONFIG* pConfig);
 SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12XsCreateDevice(
     void* pAdapter,
     uint32_t minimumFeatureLevel,

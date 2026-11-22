@@ -101,6 +101,9 @@ set_target_properties(dstorage_xs PROPERTIES PREFIX "" OUTPUT_NAME "dstorage_xs"
 target_link_libraries(dstorage_xs PRIVATE scarlettx_core)
 target_compile_definitions(dstorage_xs PRIVATE SCARLETTX_BUILDING_DSTORAGE=1)
 
+add_library(xcrdapi SHARED src/shims/dstorage_guest.cpp)
+set_target_properties(xcrdapi PROPERTIES PREFIX "" OUTPUT_NAME "xcrdapi")
+
 add_library(xaudio2_9 SHARED src/shims/xaudio2_shim.cpp src/shims/xaudio2_guest.cpp src/shims/xaudio2_null_output.cpp src/shims/xaudio2_9.def)
 set_target_properties(xaudio2_9 PROPERTIES PREFIX "" OUTPUT_NAME "xaudio2_9")
 target_link_libraries(xaudio2_9 PRIVATE scarlettx_core)
@@ -149,6 +152,7 @@ add_dependencies(scarlettx
     XboxBvhBuilder
     dstorage
     dstorage_xs
+    xcrdapi
     xaudio2_9
     GameInput
     Bink2Scarlett
@@ -304,12 +308,18 @@ target_link_libraries(test_xg_layout PRIVATE xg_xs)
 scarlettx_add_test(test_d3d12_guest_texture tests/test_d3d12_guest_texture.cpp)
 target_link_libraries(test_d3d12_guest_texture PRIVATE d3d12_xs)
 set_tests_properties(test_d3d12_guest_texture PROPERTIES ENVIRONMENT "SCARLETTX_REAL_TITLE=1")
+scarlettx_add_test(test_d3d12_list_layout tests/test_d3d12_list_layout.cpp)
+target_link_libraries(test_d3d12_list_layout PRIVATE d3d12_xs)
+set_tests_properties(test_d3d12_list_layout PROPERTIES ENVIRONMENT "SCARLETTX_REAL_TITLE=1")
 scarlettx_add_test(test_d3d12_present_window tests/test_d3d12_present_window.cpp)
 target_link_libraries(test_d3d12_present_window PRIVATE d3d12_xs)
 set_tests_properties(test_d3d12_present_window PROPERTIES
     ENVIRONMENT "SCARLETTX_REAL_TITLE=1;SCARLETTX_TRACE=1"
     FAIL_REGULAR_EXPRESSION "CreateSwapChainForHwnd failed;MakeWindowAssociation failed;ResizeBuffers failed;Present failed")
 add_test(NAME test_d3d12_present_headless COMMAND test_d3d12_present_window --headless)
+scarlettx_add_test(test_d3d12_frame_pacing tests/test_d3d12_frame_pacing.cpp)
+target_link_libraries(test_d3d12_frame_pacing PRIVATE d3d12_xs)
+set_tests_properties(test_d3d12_frame_pacing PROPERTIES ENVIRONMENT "SCARLETTX_REAL_TITLE=1")
 scarlettx_add_test(test_d3d12_xs_abi tests/test_d3d12_xs_abi.cpp)
 target_link_libraries(test_d3d12_xs_abi PRIVATE d3d12_xs XboxBvhBuilder)
 scarlettx_add_test(test_rt_pipeline tests/test_rt_pipeline.cpp)
@@ -319,6 +329,8 @@ scarlettx_add_test(test_xaudio2 tests/test_xaudio2.cpp)
 target_link_libraries(test_xaudio2 PRIVATE xaudio2_9)
 scarlettx_add_test(test_xaudio2_guest tests/test_xaudio2_guest.cpp)
 target_link_libraries(test_xaudio2_guest PRIVATE xaudio2_9)
+scarlettx_add_test(test_dstorage_guest tests/test_dstorage_guest.cpp)
+target_link_libraries(test_dstorage_guest PRIVATE xcrdapi)
 scarlettx_add_test(test_gameinput tests/test_gameinput.cpp)
 target_link_libraries(test_gameinput PRIVATE GameInput)
 
@@ -345,10 +357,10 @@ add_dependencies(test_scarlett_arena_e2e
 
 add_test(
     NAME test_boot_hello_scarlett
-    COMMAND $<TARGET_FILE:scarlettx> boot "$<TARGET_FILE_DIR:hello_scarlett>" --headless --frames 2
+    COMMAND $<TARGET_FILE:scarlettx> boot "$<TARGET_FILE_DIR:hello_scarlett>" --headless --warp --frames 2
 )
 add_test(
     NAME test_boot_rt_showcase
-    COMMAND $<TARGET_FILE:scarlettx> boot "$<TARGET_FILE_DIR:rt_showcase>" --headless --frames 2
+    COMMAND $<TARGET_FILE:scarlettx> boot "$<TARGET_FILE_DIR:rt_showcase>" --headless --warp --frames 2
         --rt-dump "$<TARGET_FILE_DIR:scarlettx>/rt_showcase_frame.ppm"
 )

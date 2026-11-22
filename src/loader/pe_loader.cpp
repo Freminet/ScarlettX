@@ -97,6 +97,8 @@ DllRedirectionTable::DllRedirectionTable() {
     RegisterRedirect("xg_xs.dll", "xg_xs.dll", true);
     RegisterRedirect("acphal.dll", "AcpHal.dll", true);
     RegisterRedirect("xgameruntime.dll", "xgameruntime.dll", true);
+    RegisterRedirect("xmem.dll", "xgameruntime.dll", true);
+    RegisterRedirect("xcrdapi.dll", "xcrdapi.dll", true);
     RegisterRedirect("xboxbvhbuilder.dll", "XboxBvhBuilder.dll", true);
     RegisterRedirect("dstorage_xs.dll", "dstorage_xs.dll", true);
     RegisterRedirect("dstorage.dll", "dstorage_xs.dll", true);

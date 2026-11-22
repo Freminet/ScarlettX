@@ -4,11 +4,14 @@
 #include <filesystem>
 #include <system_error>
 #include <atomic>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <string>
 
 #define CHECK(cond)                                                              \
     do {                                                                         \
@@ -55,6 +58,22 @@ constexpr TestGuid kGuid704C3F58 = {
 // XSystemGetConsoleId, XSystemGetXboxLiveSandboxId.
 constexpr TestGuid kGuidE349BD1A = {
     0xE349BD1Au, 0xFC20u, 0x4E40u, {0xB9, 0x9C, 0x41, 0x78, 0xCC, 0x6B, 0x40, 0x9F}};
+// Interface ids a later GDK asks the XGameSave and XSystem APIs for.
+constexpr TestGuid kGuid704C3F58Later = {
+    0x704C3F58u, 0xE629u, 0x4CC2u, {0xB1, 0x97, 0x30, 0x51, 0x1B, 0x99, 0x6E, 0xE2}};
+constexpr TestGuid kGuid67CE4BFC = {
+    0x67CE4BFCu, 0xB1D1u, 0x4AC7u, {0xBC, 0x3A, 0xCB, 0x92, 0x19, 0xA9, 0x7A, 0x85}};
+// XGameRuntimeIsFeatureAvailable.
+constexpr TestGuid kGuid8836FE87 = {
+    0x8836FE87u, 0xEDB9u, 0x4FE3u, {0x8D, 0xAD, 0x05, 0xF0, 0xD2, 0xCD, 0x5B, 0x40}};
+// XGameEventWrite.
+constexpr TestGuid kGuidBBFBDCC7 = {
+    0xBBFBDCC7u, 0xBFE7u, 0x409Bu, {0xA5, 0xCA, 0xED, 0xF0, 0x54, 0x96, 0x0B, 0x4D}};
+// XPackage and its later interface id.
+constexpr TestGuid kGuidAF406016 = {
+    0xAF406016u, 0xE850u, 0x4AA8u, {0xA8, 0x8D, 0x2F, 0x3D, 0xCB, 0x9D, 0xAC, 0x7E}};
+constexpr TestGuid kGuidF92D8712 = {
+    0xF92D8712u, 0x2B27u, 0x4D8Au, {0xBF, 0x01, 0x11, 0xA6, 0xF8, 0xE3, 0xEB, 0x42}};
 
 constexpr XGameResult kENoInterface = static_cast<XGameResult>(0x80004002u);
 constexpr XGameResult kENotImpl = static_cast<XGameResult>(0x80004001u);
@@ -479,6 +498,212 @@ int main() {
         CHECK(LoadVtableSlot<FnRelease>(save, 0x10)(save) == 0u);
         LoadVtableSlot<FnClose>(xuser, 0x20)(xuser, user);
         CHECK(LoadVtableSlot<FnRelease>(xuser, 0x10)(xuser) == 0u);
+    }
+
+    // XGameSaveFiles: the three slots after XGameSave, reached through the
+    // interface id a later GDK asks for. The title gets a folder and uses
+    // ordinary file I/O in it.
+    {
+        using FnAddAsync = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, uint32_t, XAsyncBlock*);
+        using FnAddResult = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, XAsyncBlock*, void**);
+        using FnFolderAsync = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, void*, const char*, XAsyncBlock*);
+        using FnFolderResult = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, XAsyncBlock*, size_t, char*);
+        using FnQuota = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, void*, const char*, int64_t*);
+        using FnClose = void (SCARLETTX_GDK_CALLBACK*)(void*, void*);
+        const XGameResult kGsBufferTooSmall = static_cast<XGameResult>(0x80830007u);
+        const XGameResult kPending = static_cast<XGameResult>(0x8000000Au);
+
+        void* xuser = nullptr;
+        CHECK(QueryApiImpl(&kGuid01ACD177, &kGuid01ACD177, &xuser) == XGR_S_OK);
+        XAsyncBlock add{};
+        CHECK(LoadVtableSlot<FnAddAsync>(xuser, 0x38)(xuser, 0u, &add) == XGR_S_OK);
+        void* user = nullptr;
+        CHECK(LoadVtableSlot<FnAddResult>(xuser, 0x40)(xuser, &add, &user) == XGR_S_OK);
+
+        void* files = nullptr;
+        CHECK(QueryApiImpl(&kGuid704C3F58, &kGuid704C3F58Later, &files) == XGR_S_OK);
+        CHECK(files != nullptr);
+        auto folder_async = LoadVtableSlot<FnFolderAsync>(files, 0xF0);
+        auto folder_result = LoadVtableSlot<FnFolderResult>(files, 0xF8);
+
+        char folder[260] = {};
+        XAsyncBlock block{};
+        CHECK(folder_async(files, nullptr, "files-scid", &block) == XGR_E_INVALIDARG);
+        CHECK(folder_async(files, user, "", &block) == XGR_E_INVALIDARG);
+
+        // As a title does it: its own queue, and the folder is read in the
+        // completion callback. Before the work has run the result is pending.
+        struct FolderCall {
+            void* table;
+            FnFolderResult result;
+            char folder[260];
+            XGameResult hr;
+            int calls;
+        } call{files, folder_result, {}, kPending, 0};
+        XTaskQueueHandle manual = nullptr;
+        CHECK(XTaskQueueCreate(XTaskQueueDispatchMode_Manual, XTaskQueueDispatchMode_Manual, &manual) == XGR_S_OK);
+        block.queue = manual;
+        block.context = &call;
+        block.callback = [](XAsyncBlock* async) {
+            auto* c = static_cast<FolderCall*>(async->context);
+            ++c->calls;
+            c->hr = c->result(c->table, async, sizeof(c->folder), c->folder);
+        };
+        CHECK(folder_async(files, user, "files-scid", &block) == XGR_S_OK);
+        CHECK(folder_result(files, &block, sizeof(folder), folder) == kPending);
+        CHECK(XTaskQueueDispatch(manual, XTaskQueuePort_Work, 0));
+        CHECK(call.calls == 0);
+        CHECK(XTaskQueueDispatch(manual, XTaskQueuePort_Completion, 0));
+        CHECK(call.calls == 1 && call.hr == XGR_S_OK);
+
+        // Polled instead: a buffer that is too small leaves the result there.
+        XAsyncBlock polled{};
+        polled.queue = manual;
+        CHECK(folder_async(files, user, "files-scid", &polled) == XGR_S_OK);
+        CHECK(XTaskQueueDispatch(manual, XTaskQueuePort_Work, 0));
+        CHECK(folder_result(files, &polled, 4, folder) == kGsBufferTooSmall);
+        CHECK(folder_result(files, &polled, sizeof(folder), folder) == XGR_S_OK);
+        CHECK(std::strcmp(folder, call.folder) == 0);
+        XTaskQueueCloseHandle(manual);
+        const std::filesystem::path folder_path(folder);
+        CHECK(folder_path.is_absolute() && std::filesystem::is_directory(folder_path));
+        CHECK(folder_path.filename() == "files-scid");
+        CHECK(std::filesystem::equivalent(folder_path.parent_path(), save_root));
+        const char last = folder[std::strlen(folder) - 1];
+        CHECK(last != '\\' && last != '/');
+
+        int64_t quota = -1;
+        CHECK(LoadVtableSlot<FnQuota>(files, 0x100)(files, user, "files-scid", &quota) == XGR_S_OK);
+        const int64_t empty_quota = quota;
+        CHECK(empty_quota > 0);
+        std::filesystem::create_directories(folder_path / "SaveData");
+        std::ofstream(folder_path / "SaveData" / "slot0.bin", std::ios::binary) << std::string(1000, 'x');
+        CHECK(LoadVtableSlot<FnQuota>(files, 0x100)(files, user, "files-scid", &quota) == XGR_S_OK);
+        CHECK(quota == empty_quota - 1000);
+        quota = -1;
+        CHECK(LoadVtableSlot<FnQuota>(files, 0x100)(files, nullptr, "files-scid", &quota) == XGR_E_INVALIDARG);
+        CHECK(quota == 0);
+
+        CHECK(LoadVtableSlot<FnRelease>(files, 0x10)(files) == 0u);
+        LoadVtableSlot<FnClose>(xuser, 0x20)(xuser, user);
+        CHECK(LoadVtableSlot<FnRelease>(xuser, 0x10)(xuser) == 0u);
+    }
+
+    // {E349BD1A} also answers the id a later GDK asks for.
+    {
+        using FnGetString = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, size_t, char*, size_t*);
+        void* system = nullptr;
+        CHECK(QueryApiImpl(&kGuidE349BD1A, &kGuid67CE4BFC, &system) == XGR_S_OK);
+        CHECK(system != nullptr);
+        char sandbox[16] = {};
+        size_t used = 0;
+        CHECK(LoadVtableSlot<FnGetString>(system, 0x20)(system, sizeof(sandbox), sandbox, &used) == XGR_S_OK);
+        CHECK(used == std::strlen(sandbox) + 1 && used > 1);
+        CHECK(LoadVtableSlot<FnRelease>(system, 0x10)(system) == 0u);
+    }
+
+    // {8836FE87}: one method at +0x18, taking the public feature number.
+    {
+        using FnFeature = bool (SCARLETTX_GDK_CALLBACK*)(void*, uint32_t);
+        void* feature = nullptr;
+        CHECK(QueryApiImpl(&kGuid8836FE87, &kGuid8836FE87, &feature) == XGR_S_OK);
+        CHECK(feature != nullptr);
+        auto available = LoadVtableSlot<FnFeature>(feature, 0x18);
+        CHECK(available(feature, 0u) && available(feature, 10u) && available(feature, 21u));
+        CHECK(!available(feature, 22u) && !available(feature, 0xFFFFFFFFu));
+        CHECK(LoadVtableSlot<FnRelease>(feature, 0x10)(feature) == 0u);
+    }
+
+    // {BBFBDCC7}: XGameEventWrite at +0x18 accepts an event for a user.
+    {
+        using FnWrite = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, void*, const char*, const char*, const char*,
+                                                              const char*, const char*);
+        void* events = nullptr;
+        CHECK(QueryApiImpl(&kGuidBBFBDCC7, &kGuidBBFBDCC7, &events) == XGR_S_OK);
+        CHECK(events != nullptr);
+        int some_user = 0;
+        auto write = LoadVtableSlot<FnWrite>(events, 0x18);
+        CHECK(write(events, &some_user, "scid", "session", "LevelUp", "{}", "{}") == XGR_S_OK);
+        CHECK(write(events, nullptr, "scid", "session", "LevelUp", "{}", "{}") == XGR_E_INVALIDARG);
+        CHECK(LoadVtableSlot<FnRelease>(events, 0x10)(events) == 0u);
+    }
+
+    // {AF406016}: XPackage through its later interface id: the user locale at
+    // +0x58, package enumeration at +0x118, install notifications at +0x120.
+    {
+        using FnLocale = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, size_t, char*);
+        using FnEnumerate = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, uint32_t, uint32_t, void*, void*);
+        using FnRegister = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, void*, void*, void*, uint64_t*);
+        using FnOther = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, uintptr_t, uintptr_t, uintptr_t);
+        const XGameResult kTooSmall = static_cast<XGameResult>(0x8007007Au);
+        auto set_env = [](const char* name, const std::string& value) {
+#if defined(_WIN32)
+            _putenv_s(name, value.c_str());
+#else
+            if (value.empty()) {
+                unsetenv(name);
+            } else {
+                setenv(name, value.c_str(), 1);
+            }
+#endif
+        };
+
+        void* package = nullptr;
+        CHECK(QueryApiImpl(&kGuidAF406016, &kGuidF92D8712, &package) == XGR_S_OK);
+        CHECK(package != nullptr);
+        auto locale_of = LoadVtableSlot<FnLocale>(package, 0x58);
+        char locale[85] = {};
+
+        // Without a package the host's own locale name comes back.
+        set_env("SCARLETTX_LOCALE", "");
+        set_env("SCARLETTX_PACKAGE_ROOT", "");
+        CHECK(locale_of(package, sizeof(locale), locale) == XGR_S_OK);
+        const std::string host_locale = locale;
+        const std::string host_language = host_locale.substr(0, host_locale.find('-'));
+        CHECK(host_language.size() >= 2);
+        CHECK(locale_of(package, host_locale.size(), locale) == kTooSmall);
+
+        // With a package, the language it declares that serves that locale.
+        const std::filesystem::path package_root = save_root / "package";
+        std::filesystem::create_directories(package_root);
+        auto declare = [&](const std::string& resources) {
+            std::ofstream(package_root / "MicrosoftGame.config")
+                << "<Game>\n  <!-- <Resource Language=\"" << host_locale << "\"/> -->\n  <Resources>\n" << resources
+                << "  </Resources>\n</Game>\n";
+        };
+        const std::string other_region = host_language + "-ZZ";
+        std::string shouted = host_locale;
+        for (char& c : shouted) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        set_env("SCARLETTX_PACKAGE_ROOT", package_root.string());
+        declare("<Resource Language=\"qq-QQ\" />\n<Resource Language=\"" + other_region + "\" />\n");
+        CHECK(locale_of(package, sizeof(locale), locale) == XGR_S_OK && locale == other_region);
+        declare("<Resource Language=\"qq-QQ\" />\n<Resource Language=\"xx-XX\" />\n");
+        CHECK(locale_of(package, sizeof(locale), locale) == XGR_S_OK && std::strcmp(locale, "qq-QQ") == 0);
+        declare("<Resource Language=\"qq-QQ\" />\n<Resource Language=\"" + other_region +
+                "\" />\n<Resource\n  Language='" + shouted + "' />\n");
+        CHECK(locale_of(package, sizeof(locale), locale) == XGR_S_OK && locale == shouted);
+
+        // SCARLETTX_LOCALE is reported as it is.
+        set_env("SCARLETTX_LOCALE", "pt-BR");
+        CHECK(locale_of(package, sizeof(locale), locale) == XGR_S_OK && std::strcmp(locale, "pt-BR") == 0);
+        set_env("SCARLETTX_LOCALE", "");
+        set_env("SCARLETTX_PACKAGE_ROOT", "");
+
+        // No add-on content is installed, and nothing gets installed later.
+        int calls = 0;
+        int dummy_callback = 0;
+        CHECK(LoadVtableSlot<FnEnumerate>(package, 0x118)(package, 1u, 1u, &calls, &dummy_callback) == XGR_S_OK);
+        CHECK(calls == 0);
+        uint64_t token = 0;
+        CHECK(LoadVtableSlot<FnRegister>(package, 0x120)(package, nullptr, nullptr, &dummy_callback, &token) ==
+              XGR_S_OK);
+        CHECK(token != 0);
+        CHECK(LoadVtableSlot<FnRegister>(package, 0x120)(package, nullptr, nullptr, nullptr, &token) ==
+              XGR_E_INVALIDARG);
+
+        // A slot nothing identifies is in the table and fails.
+        CHECK(LoadVtableSlot<FnOther>(package, 0x18)(package, 0, 0, 0) == kENotImpl);
+        CHECK(LoadVtableSlot<FnRelease>(package, 0x10)(package) == 0u);
     }
 
     UninitializeApiImpl();

@@ -1,9 +1,13 @@
 #define SCARLETTX_BUILDING_XCURL 1
 #include "scarlettx/net/xcurl_abi.h"
 
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -32,10 +36,30 @@ struct XCurlMockRule {
     std::vector<uint8_t> body;
 };
 
+// There is no network behind this shim, so a transfer runs to completion
+// inside curl_multi_perform, exactly as curl_easy_perform does it.
+struct XCurlMultiHandle {
+    std::vector<CURL*> attached;
+    std::vector<CURL*> pending;
+    std::deque<CURLMsg> done;
+    CURLMsg current{};
+};
+
 std::mutex g_mutex;
+std::condition_variable g_multi_wake;
 bool g_global_inited = false;
 std::unordered_map<void*, std::unique_ptr<XCurlEasyHandle>> g_handles;
+std::unordered_map<void*, std::unique_ptr<XCurlMultiHandle>> g_multis;
 std::vector<XCurlMockRule> g_mocks;
+
+// Caller holds g_mutex. Messages already handed out stay readable.
+void DetachLocked(XCurlMultiHandle& m, CURL* curl) {
+    m.attached.erase(std::remove(m.attached.begin(), m.attached.end(), curl), m.attached.end());
+    m.pending.erase(std::remove(m.pending.begin(), m.pending.end(), curl), m.pending.end());
+    m.done.erase(std::remove_if(m.done.begin(), m.done.end(),
+                                [curl](const CURLMsg& msg) { return msg.easy_handle == curl; }),
+                 m.done.end());
+}
 
 }  // namespace
 
@@ -51,7 +75,9 @@ CURLcode curl_global_init(int64_t flags) {
 void curl_global_cleanup(void) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_handles.clear();
+    g_multis.clear();
     g_global_inited = false;
+    g_multi_wake.notify_all();
 }
 
 CURL* curl_easy_init(void) {
@@ -65,6 +91,7 @@ CURL* curl_easy_init(void) {
 void curl_easy_cleanup(CURL* curl) {
     if (!curl) return;
     std::lock_guard<std::mutex> lock(g_mutex);
+    for (auto& multi : g_multis) DetachLocked(*multi.second, curl);
     g_handles.erase(curl);
 }
 
@@ -268,6 +295,105 @@ void curl_slist_free_all(curl_slist* list) {
 
 const char* curl_version(void) {
     return "ScarlettX-XCurl/8.0.0-HLE";
+}
+
+CURLM* curl_multi_init(void) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto m = std::make_unique<XCurlMultiHandle>();
+    void* raw = m.get();
+    g_multis[raw] = std::move(m);
+    return raw;
+}
+
+CURLMcode curl_multi_cleanup(CURLM* multi) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_multis.erase(multi) == 0) return CURLM_BAD_HANDLE;
+    g_multi_wake.notify_all();
+    return CURLM_OK;
+}
+
+CURLMcode curl_multi_add_handle(CURLM* multi, CURL* curl) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = g_multis.find(multi);
+    if (it == g_multis.end()) return CURLM_BAD_HANDLE;
+    if (g_handles.find(curl) == g_handles.end()) return CURLM_BAD_EASY_HANDLE;
+    for (const auto& other : g_multis) {
+        const auto& attached = other.second->attached;
+        if (std::find(attached.begin(), attached.end(), curl) != attached.end()) return CURLM_ADDED_ALREADY;
+    }
+    it->second->attached.push_back(curl);
+    it->second->pending.push_back(curl);
+    g_multi_wake.notify_all();
+    return CURLM_OK;
+}
+
+CURLMcode curl_multi_remove_handle(CURLM* multi, CURL* curl) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = g_multis.find(multi);
+    if (it == g_multis.end()) return CURLM_BAD_HANDLE;
+    if (g_handles.find(curl) == g_handles.end()) return CURLM_BAD_EASY_HANDLE;
+    DetachLocked(*it->second, curl);
+    return CURLM_OK;
+}
+
+CURLMcode curl_multi_perform(CURLM* multi, int* running_handles) {
+    std::vector<CURL*> batch;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto it = g_multis.find(multi);
+        if (it == g_multis.end()) return CURLM_BAD_HANDLE;
+        batch.swap(it->second->pending);
+    }
+    for (CURL* curl : batch) {
+        // Runs the title's callbacks, which may remove handles or clean up.
+        const CURLcode result = curl_easy_perform(curl);
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto it = g_multis.find(multi);
+        if (it == g_multis.end()) return CURLM_BAD_HANDLE;
+        const auto& attached = it->second->attached;
+        if (std::find(attached.begin(), attached.end(), curl) == attached.end()) continue;
+        CURLMsg msg{};
+        msg.msg = CURLMSG_DONE;
+        msg.easy_handle = curl;
+        msg.data.result = result;
+        it->second->done.push_back(msg);
+    }
+    if (running_handles) *running_handles = 0;
+    return CURLM_OK;
+}
+
+CURLMsg* curl_multi_info_read(CURLM* multi, int* msgs_in_queue) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = g_multis.find(multi);
+    if (it == g_multis.end() || it->second->done.empty()) {
+        if (msgs_in_queue) *msgs_in_queue = 0;
+        return nullptr;
+    }
+    XCurlMultiHandle& m = *it->second;
+    m.current = m.done.front();
+    m.done.pop_front();
+    if (msgs_in_queue) *msgs_in_queue = static_cast<int>(m.done.size());
+    return &m.current;
+}
+
+// No sockets to wait on: returns once a transfer is waiting for
+// curl_multi_perform, or when the timeout has passed.
+CURLMcode curl_multi_poll(
+    CURLM* multi,
+    struct curl_waitfd* /*extra_fds*/,
+    unsigned int /*extra_nfds*/,
+    int timeout_ms,
+    int* numfds) {
+    if (numfds) *numfds = 0;
+    std::unique_lock<std::mutex> lock(g_mutex);
+    if (g_multis.find(multi) == g_multis.end()) return CURLM_BAD_HANDLE;
+    if (timeout_ms > 0) {
+        g_multi_wake.wait_for(lock, std::chrono::milliseconds(timeout_ms), [multi] {
+            auto it = g_multis.find(multi);
+            return it == g_multis.end() || !it->second->pending.empty();
+        });
+    }
+    return CURLM_OK;
 }
 
 CURLcode xcurl_register_mock_response(

@@ -52,6 +52,26 @@ int main() {
     {
         D3D12XboxSetProcessDebugFlags(D3D12XBOX_PROCESS_DEBUG_FLAG_NONE);
         SX_CHECK_EQ(D3D12XboxGetProcessDebugFlags(), 0u);
+
+        // What a title passes before it creates its device.
+        D3D12XS_VIRTUAL_MEMORY_CONFIG vm{};
+        vm.Option = 0xFFFFFFFFu;
+        vm.Result0 = vm.Result1 = ~0ull;
+        SX_CHECK(D3D12ConfigureVirtualMemoryX(&vm) >= 0);
+        SX_CHECK(vm.Result0 == 0 && vm.Result1 == 0);
+        SX_CHECK_EQ(D3D12ConfigureVirtualMemoryX(nullptr), static_cast<int32_t>(0x80070057u));
+        vm.Flags = 2;
+        SX_CHECK_EQ(D3D12ConfigureVirtualMemoryX(&vm), static_cast<int32_t>(0x80070057u));
+        vm.Flags = 1;
+        vm.SizeIn4MbUnits = 34;
+        SX_CHECK_EQ(D3D12ConfigureVirtualMemoryX(&vm), static_cast<int32_t>(0x80070057u));
+
+        // The interface id is a data export; a title's import slot holds its address.
+        const void* iid = reinterpret_cast<const void*>(
+            GetProcAddress(GetModuleHandleA("d3d12_xs.dll"), "IID_ID3D12Device"));
+        SX_CHECK(iid != nullptr);
+        SX_CHECK(std::memcmp(iid, &__uuidof(ID3D12Device), 16) == 0);
+
         D3D12XBOX_CREATE_DEVICE_PARAMETERS params{};
         params.Version = 1;
         params.PreferWarp = 1;

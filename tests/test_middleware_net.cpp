@@ -210,6 +210,38 @@ int main() {
         SX_CHECK(body_out == payload);
         SX_CHECK(dl == static_cast<int64_t>(payload.size()));
 
+        // Multi interface, driven the way a title's update loop does it.
+        CURLM* multi = curl_multi_init();
+        SX_CHECK(multi != nullptr);
+        body_out.clear();
+        SX_CHECK(curl_multi_add_handle(multi, curl) == CURLM_OK);
+        SX_CHECK(curl_multi_add_handle(multi, curl) == CURLM_ADDED_ALREADY);
+        SX_CHECK(curl_multi_add_handle(multi, &body_out) == CURLM_BAD_EASY_HANDLE);
+        int numfds = -1;
+        SX_CHECK(curl_multi_poll(multi, nullptr, 0, 1000, &numfds) == CURLM_OK);
+        SX_CHECK(numfds == 0);
+        int running = -1;
+        SX_CHECK(curl_multi_perform(multi, &running) == CURLM_OK);
+        SX_CHECK(running == 0);
+        SX_CHECK(body_out == payload);
+        int left = -1;
+        CURLMsg* msg = curl_multi_info_read(multi, &left);
+        SX_CHECK(msg != nullptr && left == 0);
+        SX_CHECK(msg->msg == CURLMSG_DONE && msg->easy_handle == curl);
+        SX_CHECK(curl_multi_remove_handle(multi, curl) == CURLM_OK);
+        SX_CHECK(msg->data.result == CURLE_OK);
+        SX_CHECK(curl_multi_info_read(multi, &left) == nullptr && left == 0);
+        SX_CHECK(curl_multi_poll(multi, nullptr, 0, 0, &numfds) == CURLM_OK);
+
+        // A handle removed before it ran produces no message.
+        SX_CHECK(curl_multi_add_handle(multi, curl) == CURLM_OK);
+        SX_CHECK(curl_multi_remove_handle(multi, curl) == CURLM_OK);
+        SX_CHECK(curl_multi_perform(multi, &running) == CURLM_OK);
+        SX_CHECK(curl_multi_info_read(multi, &left) == nullptr);
+        SX_CHECK(curl_multi_cleanup(multi) == CURLM_OK);
+        SX_CHECK(curl_multi_cleanup(multi) == CURLM_BAD_HANDLE);
+        SX_CHECK(curl_multi_perform(multi, &running) == CURLM_BAD_HANDLE);
+
         curl_slist_free_all(hdrs);
         curl_easy_cleanup(curl);
         curl_global_cleanup();

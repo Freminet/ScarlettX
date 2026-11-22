@@ -60,19 +60,24 @@ Status PackageVfs::ResolvePath(const std::string& virtual_path, std::string& out
         return static_cast<char>(std::tolower(c));
     });
 
-    for (const auto& [root, host_dir] : mounts_) {
-        if (lower.rfind(root, 0) == 0 &&
+    // A nested directory mount takes precedence over its parent drive mount.
+    const std::string* host_dir = nullptr;
+    size_t root_length = 0;
+    for (const auto& [root, directory] : mounts_) {
+        if ((!host_dir || root.size() > root_length) && lower.starts_with(root) &&
             (lower.size() == root.size() || lower[root.size()] == '\\')) {
-            std::string rel = norm.substr(root.size());
-            while (!rel.empty() && rel.front() == '\\') {
-                rel.erase(rel.begin());
-            }
-            std::filesystem::path p = std::filesystem::path(host_dir) / rel;
-            out_host_path = p.string();
-            return Status::Ok();
+            host_dir = &directory;
+            root_length = root.size();
         }
     }
-    return Status::Error(StatusCode::NotFound, "No mount point for virtual path: " + virtual_path);
+    if (!host_dir) {
+        return Status::Error(StatusCode::NotFound, "No mount point for virtual path: " + virtual_path);
+    }
+
+    const size_t rel_start = norm.find_first_not_of('\\', root_length);
+    const std::string rel = rel_start == std::string::npos ? std::string{} : norm.substr(rel_start);
+    out_host_path = (std::filesystem::path(*host_dir) / rel).string();
+    return Status::Ok();
 }
 
 Status PackageVfs::ReadFileBytes(const std::string& virtual_path,

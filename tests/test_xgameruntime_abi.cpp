@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -96,6 +97,29 @@ bool SCARLETTX_GDK_CALLBACK ProbeSaveQuota(const XGameSaveBlobInfo*, void* ctx) 
     return false;
 }
 
+struct ReentrantEnum {
+    XGameSaveProviderHandle provider = nullptr;
+    int quota_calls = 0;
+};
+
+bool SCARLETTX_GDK_CALLBACK ReentrantContainersCb(const XGameSaveContainerInfo* /*info*/, void* ctx) {
+    auto* reentrant = static_cast<ReentrantEnum*>(ctx);
+    int64_t quota = 0;
+    if (XGameSaveGetRemainingQuota(reentrant->provider, &quota) == XGR_S_OK) {
+        ++reentrant->quota_calls;
+    }
+    return true;
+}
+
+bool SCARLETTX_GDK_CALLBACK ReentrantBlobsCb(const XGameSaveBlobInfo* /*info*/, void* ctx) {
+    auto* reentrant = static_cast<ReentrantEnum*>(ctx);
+    int64_t quota = 0;
+    if (XGameSaveGetRemainingQuota(reentrant->provider, &quota) == XGR_S_OK) {
+        ++reentrant->quota_calls;
+    }
+    return true;
+}
+
 void* SCARLETTX_GDK_CALLBACK CustomAlloc(size_t sz, uint64_t attr) {
     g_custom_allocs.fetch_add(1);
     return XMemAllocDefault(sz, attr);
@@ -111,9 +135,11 @@ void SCARLETTX_GDK_CALLBACK CustomFree(void* ptr, uint64_t attr) {
 int main() {
     // Isolate GameSave directory for this test run.
     namespace fs = std::filesystem;
-    fs::path save_root = fs::temp_directory_path() / "scarlettx_test_gamesave_abi";
+    fs::path sandbox = fs::temp_directory_path() / "scarlettx_test_gamesave_abi";
+    // Nested so that a name escaping the save root still lands in the sandbox.
+    fs::path save_root = sandbox / "a" / "b" / "saves";
     std::error_code ec;
-    fs::remove_all(save_root, ec);
+    fs::remove_all(sandbox, ec);
 #if defined(_WIN32)
     _putenv_s("SCARLETTX_SAVE_ROOT", save_root.string().c_str());
 #else
@@ -261,6 +287,28 @@ int main() {
     XGameSaveContainerHandle container = nullptr;
     CHECK(XGameSaveCreateContainer(provider, "slot_0", &container) == XGR_S_OK && container != nullptr);
 
+    // Names made only of dots resolve to the provider directory or above it.
+    const fs::path sentinel = save_root / "sentinel";
+    std::ofstream(sentinel).put('x');
+    XGameSaveUpdateHandle dot_update = nullptr;
+    CHECK(XGameSaveCreateUpdate(container, nullptr, &dot_update) == XGR_S_OK);
+    for (const char* dots : {"..", ".", "..."}) {
+        XGameSaveProviderHandle dot_provider = nullptr;
+        XGameSaveContainerHandle dot_container = nullptr;
+        XGameSaveBlob dot_blob{};
+        uint32_t dot_count = 1;
+        XAsyncBlock dot_async{};
+        CHECK(XGameSaveDeleteContainer(provider, dots) == XGR_E_INVALIDARG);
+        CHECK(XGameSaveCreateContainer(provider, dots, &dot_container) == XGR_E_INVALIDARG);
+        CHECK(XGameSaveInitializeProvider(user, dots, false, &dot_provider) == XGR_E_INVALIDARG);
+        CHECK(XGameSaveSubmitBlobWrite(dot_update, dots, nullptr, 0) == XGR_E_INVALIDARG);
+        CHECK(XGameSaveSubmitBlobDelete(dot_update, dots) == XGR_E_INVALIDARG);
+        CHECK(XGameSaveReadBlobData(container, &dots, &dot_count, sizeof(dot_blob), &dot_blob) == XGR_E_INVALIDARG);
+        CHECK(XGameSaveReadBlobDataAsync(container, &dots, 1, &dot_async) == XGR_E_INVALIDARG);
+    }
+    XGameSaveCloseUpdate(dot_update);
+    CHECK(fs::exists(sentinel));
+
     XGameSaveUpdateHandle update = nullptr;
     CHECK(XGameSaveCreateUpdate(container, "Slot 0", &update) == XGR_S_OK && update != nullptr);
     const std::string payload = "ScarlettX_SaveData_v1_HP=100_LV=99";
@@ -285,6 +333,13 @@ int main() {
     SaveEnumerationProbe probe{provider};
     CHECK(XGameSaveEnumerateBlobInfo(container, &probe, ProbeSaveQuota) == XGR_S_OK);
     CHECK(probe.result == XGR_S_OK);
+
+    // Enumeration callbacks may call back into XGameSave
+    ReentrantEnum reentrant{provider};
+    CHECK(XGameSaveEnumerateContainerInfo(provider, &reentrant, ReentrantContainersCb) == XGR_S_OK);
+    CHECK(reentrant.quota_calls == 1);
+    CHECK(XGameSaveEnumerateBlobInfo(container, &reentrant, ReentrantBlobsCb) == XGR_S_OK);
+    CHECK(reentrant.quota_calls == 2);
 
     // Sync read
     const char* read_names[] = {"profile.dat"};
@@ -413,9 +468,25 @@ int main() {
     CHECK(g_custom_allocs.load() == 1 && g_custom_frees.load() == 1);
     CHECK(XMemSetAllocationHooks(nullptr, nullptr) == XGR_S_OK);
 
-    void* vmem = XMemVirtualAlloc(nullptr, 65536, 0, 0);
+    void* vmem = XMemVirtualAlloc(nullptr, 65536, 0, 0, 0);
     CHECK(vmem != nullptr);
     std::memset(vmem, 0xAB, 4096);
+    CHECK(XMemVirtualFree(vmem, 0, 0) == true);
+
+    // The call a title makes: commit only, XMem flags 1, PAGE_READWRITE.
+    vmem = XMemVirtualAlloc(nullptr, 3 * 4096 + 1, 0x1000, 1, 0x04);
+    CHECK(vmem != nullptr);
+    std::memset(vmem, 0xCD, 4 * 4096);
+    CHECK(XMemVirtualFree(vmem, 0, 0) == true);
+
+    // Console page sizes: 64 KB (0x20400000) and 2 MB (0x20000000).
+    vmem = XMemVirtualAlloc(nullptr, 100, 0x20400000u | 0x3000, 1, 0x04);
+    CHECK(vmem != nullptr && (reinterpret_cast<uintptr_t>(vmem) & 0xFFFF) == 0);
+    std::memset(vmem, 0xEF, 0x10000);
+    CHECK(XMemVirtualFree(vmem, 0, 0) == true);
+    vmem = XMemVirtualAlloc(nullptr, 0x200001, 0x20000000u | 0x3000, 1, 0x04);
+    CHECK(vmem != nullptr && (reinterpret_cast<uintptr_t>(vmem) & 0x1FFFFF) == 0);
+    std::memset(vmem, 0x12, 0x400000);
     CHECK(XMemVirtualFree(vmem, 0, 0) == true);
 
     // 8. XThread
@@ -431,7 +502,7 @@ int main() {
     XTaskQueueCloseHandle(tp_q);
     XGameRuntimeUninitialize();
 
-    fs::remove_all(save_root, ec);
+    fs::remove_all(sandbox, ec);
 
     std::cout << "[test_xgameruntime_abi] PASSED (XTaskQueue, XAsync, XSystem, XUser, XGameSave, XMem, XThread)\n";
     return 0;
