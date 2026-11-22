@@ -175,6 +175,7 @@ struct GiGuid {
 };
 constexpr GiGuid kIidIUnknown = {0x00000000u, 0x0000u, 0x0000u, {0xC0, 0, 0, 0, 0, 0, 0, 0x46}};
 constexpr GiGuid kIidIAgileObject = {0x94EA2B94u, 0xE9CCu, 0x49E0u, {0xC0, 0xFF, 0xEE, 0x64, 0xCA, 0x8F, 0x5B, 0x90}};
+constexpr GiGuid kIidIGameInputV0 = {0x11BE2A7Eu, 0x4254u, 0x445Au, {0x9C, 0x09, 0xFF, 0xC4, 0x0F, 0x00, 0x69, 0x18}};
 constexpr GiGuid kIidIGameInputDevice = {0x31DD86FBu, 0x4C1Bu, 0x408Au, {0x86, 0x8F, 0x43, 0x9B, 0x3C, 0xD4, 0x71, 0x25}};
 constexpr GiGuid kIidIGameInputReading = {0x2156947Au, 0xE1FAu, 0x4DE0u, {0xA3, 0x0B, 0xD8, 0x12, 0x93, 0x1D, 0xBD, 0x8D}};
 
@@ -683,6 +684,23 @@ int32_t GameInputCreate(uint64_t* out_game_input) {
                   << std::hex << h << std::dec << ")\n";
     }
     return kS_OK;
+}
+
+int32_t GameInputInitialize(const void* riid, void** out_game_input) {
+    if (!out_game_input) return kE_INVALIDARG;
+    *out_game_input = nullptr;
+    // The shim exposes the v0 IGameInput vtable, so only its IID is accepted;
+    // newer versions answer E_NOINTERFACE, as a v0 runtime would.
+    if (!riid || std::memcmp(riid, &kIidIGameInputV0, sizeof(kIidIGameInputV0)) != 0) {
+        if (GameInputTraceEnabled()) {
+            std::cerr << "[ScarlettX][GameInput] GameInputInitialize(unsupported IID) -> E_NOINTERFACE\n";
+        }
+        return kE_NOINTERFACE;
+    }
+    uint64_t handle = 0;
+    const int32_t hr = GameInputCreate(&handle);
+    if (hr == kS_OK) *out_game_input = reinterpret_cast<void*>(handle);
+    return hr;
 }
 
 int32_t GameInputDestroy(uint64_t game_input) {
