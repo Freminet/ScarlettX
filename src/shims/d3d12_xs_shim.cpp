@@ -2528,6 +2528,34 @@ void DumpResourceToBmp(
     rb->Release();
 }
 
+bool WaitForPresentCopy(XboxD3D12CommandQueueProxy* obj) {
+    if (!obj->present_fence || !obj->present_event) return false;
+    if (obj->present_fence->GetCompletedValue() < obj->present_fence_val) {
+        ResetEvent(obj->present_event);
+        if (FAILED(obj->present_fence->SetEventOnCompletion(obj->present_fence_val, obj->present_event)) ||
+            WaitForSingleObject(obj->present_event, 2000) != WAIT_OBJECT_0) return false;
+    }
+    const uint64_t completed = obj->present_fence->GetCompletedValue();
+    return completed != UINT64_MAX && completed >= obj->present_fence_val;
+}
+
+bool MatchPresentBackBuffers(XboxD3D12CommandQueueProxy* obj, UINT width, UINT height, DXGI_FORMAT format) {
+    if (obj->swap_w == width && obj->swap_h == height && obj->swap_fmt == format) return true;
+    const HRESULT hr = obj->swapchain->ResizeBuffers(0, width, height, format, 0);
+    if (FAILED(hr)) {
+        std::cerr << "[ScarlettX][d3d12_xs] ResizeBuffers failed hr=0x"
+                  << std::hex << static_cast<uint32_t>(hr) << std::dec << "\n";
+        return false;
+    }
+    obj->swap_w = width;
+    obj->swap_h = height;
+    obj->swap_fmt = format;
+    if (TraceEnabled()) {
+        std::cerr << "[ScarlettX][d3d12_xs] SwapChain resized to " << width << "x" << height << "\n";
+    }
+    return true;
+}
+
 void EnsurePresentSwapChain(XboxD3D12CommandQueueProxy* obj, UINT w, UINT h, DXGI_FORMAT src_fmt) {
     if (!obj || obj->present_init_attempted || !obj->pc_device || !obj->pc_queue) return;
     obj->present_init_attempted = true;
@@ -2619,17 +2647,15 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
         const auto cur_state = static_cast<D3D12_RESOURCE_STATES>(
             src_proxy->tracked_state.load(std::memory_order_relaxed));
 
-        if (obj->swapchain && obj->present_alloc && obj->present_list && obj->present_fence && obj->present_event) {
+        if (obj->swapchain && obj->present_alloc && obj->present_list &&
+            WaitForPresentCopy(obj) &&
+            MatchPresentBackBuffers(obj, static_cast<UINT>(sdesc.Width), sdesc.Height,
+                                    NormalizeSwapChainFormat(sdesc.Format)) &&
+            SUCCEEDED(obj->present_alloc->Reset()) &&
+            SUCCEEDED(obj->present_list->Reset(obj->present_alloc, nullptr))) {
             const UINT bb_idx = obj->swapchain->GetCurrentBackBufferIndex();
             ID3D12Resource* bb = nullptr;
             if (SUCCEEDED(obj->swapchain->GetBuffer(bb_idx, __uuidof(ID3D12Resource), reinterpret_cast<void**>(&bb))) && bb) {
-                if (obj->present_fence->GetCompletedValue() < obj->present_fence_val) {
-                    obj->present_fence->SetEventOnCompletion(obj->present_fence_val, obj->present_event);
-                    WaitForSingleObject(obj->present_event, 2000);
-                }
-                obj->present_alloc->Reset();
-                obj->present_list->Reset(obj->present_alloc, nullptr);
-
                 D3D12_RESOURCE_BARRIER pre[2] = {};
                 UINT pre_n = 0;
                 if (cur_state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
@@ -2686,6 +2712,8 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
                     obj->pc_queue->Signal(obj->present_fence, val);
                 }
                 bb->Release();
+            } else {
+                obj->present_list->Close();
             }
         }
 
@@ -2702,7 +2730,8 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
                 }
                 return frames;
             }();
-            if (std::find(dump_frames.begin(), dump_frames.end(), static_cast<uint64_t>(n)) != dump_frames.end()) {
+            if (std::find(dump_frames.begin(), dump_frames.end(), static_cast<uint64_t>(n)) != dump_frames.end() &&
+                WaitForPresentCopy(obj)) {
                 DumpResourceToBmp(obj, src_proxy->pc_res, cur_state, std::string(dump_path) + "_" + std::to_string(n) + ".bmp");
             }
         }

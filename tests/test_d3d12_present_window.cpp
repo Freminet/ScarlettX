@@ -189,6 +189,20 @@ int main() {
         SX_REQUIRE(WaitForMenuMode(window_thread, false, 5000));
     }
 
+    // Games can switch the output size while keeping the same host window.
+    td.Width = 320;
+    td.Height = 180;
+    void* resized_frame = nullptr;
+    SX_REQUIRE(Call(device, kDevCreateCommittedResource, &hp, uintptr_t{0}, &td,
+                    static_cast<uintptr_t>(D3D12_RESOURCE_STATE_COMMON), static_cast<void*>(nullptr),
+                    static_cast<void*>(nullptr), &resized_frame) == 0 && resized_frame);
+    plane[2] = reinterpret_cast<uint64_t>(resized_frame);
+    SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
+    SX_REQUIRE(FindPresentWindow() == hwnd);
+    plane[2] = reinterpret_cast<uint64_t>(frame);
+    SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
+    SX_REQUIRE(Call(resized_frame, kRelease) == 0);
+
     // The window goes away with the queue.
     SX_REQUIRE(Call(queue, kRelease) == 0);
     SX_REQUIRE(!IsWindow(hwnd));

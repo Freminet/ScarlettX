@@ -308,7 +308,7 @@ scarlettx_add_test(test_d3d12_present_window tests/test_d3d12_present_window.cpp
 target_link_libraries(test_d3d12_present_window PRIVATE d3d12_xs)
 set_tests_properties(test_d3d12_present_window PROPERTIES
     ENVIRONMENT "SCARLETTX_REAL_TITLE=1;SCARLETTX_TRACE=1"
-    FAIL_REGULAR_EXPRESSION "CreateSwapChainForHwnd failed;MakeWindowAssociation failed;Present failed")
+    FAIL_REGULAR_EXPRESSION "CreateSwapChainForHwnd failed;MakeWindowAssociation failed;ResizeBuffers failed;Present failed")
 scarlettx_add_test(test_d3d12_xs_abi tests/test_d3d12_xs_abi.cpp)
 target_link_libraries(test_d3d12_xs_abi PRIVATE d3d12_xs XboxBvhBuilder)
 scarlettx_add_test(test_rt_pipeline tests/test_rt_pipeline.cpp)
