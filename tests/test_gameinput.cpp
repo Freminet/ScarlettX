@@ -53,6 +53,7 @@ struct Guid {
 };
 const Guid kIidIUnknown = {0x00000000u, 0x0000u, 0x0000u, {0xC0, 0, 0, 0, 0, 0, 0, 0x46}};
 const Guid kIidUnrelated = {0x12345678u, 0x1234u, 0x5678u, {1, 2, 3, 4, 5, 6, 7, 8}};
+const Guid kIidGameInput = {0x11BE2A7Eu, 0x4254u, 0x445Au, {0x9C, 0x09, 0xFF, 0xC4, 0x0F, 0x00, 0x69, 0x18}};
 
 struct DeviceEvents {
     int count = 0;
@@ -172,6 +173,12 @@ int main() {
     // 5. The same object through its vtable, as a title calls it.
     {
         void* input = reinterpret_cast<void*>(gi);
+        void* queried = input;
+        SX_CHECK_EQ(Call(input, 0, &kIidUnrelated, &queried), kNoInterface);
+        SX_CHECK(queried == nullptr);
+        SX_CHECK_EQ(Call(input, 0, &kIidGameInput, &queried), intptr_t{0});
+        SX_CHECK(queried == input);
+        SX_CHECK_EQ(Call(queried, 2), intptr_t{1});
 
         // A blocking-enumeration registration reports the gamepad before it
         // returns (values as the test title passes them).

@@ -141,19 +141,6 @@ std::shared_ptr<GameInputObject> GetInstance(uint64_t handle) {
     return it == State().instances.end() ? nullptr : it->second;
 }
 
-intptr_t SCARLETTX_GI_CALL GiQueryInterface(void* self, uintptr_t /*riid*/, uintptr_t ppv, uintptr_t) {
-    auto* obj = static_cast<GameInputObject*>(self);
-    auto** out = reinterpret_cast<void**>(ppv);
-    if (!out) return kE_POINTER;
-    if (!obj) {
-        *out = nullptr;
-        return kE_INVALIDARG;
-    }
-    obj->ref_count.fetch_add(1, std::memory_order_relaxed);
-    *out = self;
-    return kS_OK;
-}
-
 intptr_t SCARLETTX_GI_CALL GiAddRef(void* self, uintptr_t, uintptr_t, uintptr_t) {
     auto* obj = static_cast<GameInputObject*>(self);
     return obj ? static_cast<intptr_t>(obj->ref_count.fetch_add(1, std::memory_order_relaxed) + 1) : 0;
@@ -201,6 +188,7 @@ struct GiGuid {
     uint16_t d3;
     uint8_t d4[8];
 };
+constexpr GiGuid kIidIGameInput = {0x11BE2A7Eu, 0x4254u, 0x445Au, {0x9C, 0x09, 0xFF, 0xC4, 0x0F, 0x00, 0x69, 0x18}};
 constexpr GiGuid kIidIUnknown = {0x00000000u, 0x0000u, 0x0000u, {0xC0, 0, 0, 0, 0, 0, 0, 0x46}};
 constexpr GiGuid kIidIAgileObject = {0x94EA2B94u, 0xE9CCu, 0x49E0u, {0xC0, 0xFF, 0xEE, 0x64, 0xCA, 0x8F, 0x5B, 0x90}};
 constexpr GiGuid kIidIGameInputDevice = {0x31DD86FBu, 0x4C1Bu, 0x408Au, {0x86, 0x8F, 0x43, 0x9B, 0x3C, 0xD4, 0x71, 0x25}};
@@ -213,6 +201,20 @@ bool GiGuidIs(uintptr_t riid, const GiGuid& guid) {
 constexpr size_t kDeviceInfoSize = 0x180;
 constexpr size_t kInfoOffVendorId = 0x04;        // public header layout, not read by the test title
 constexpr size_t kInfoOffProductId = 0x06;       // public header layout, not read by the test title
+intptr_t SCARLETTX_GI_CALL GiQueryInterface(void* self, uintptr_t riid, uintptr_t ppv, uintptr_t) {
+    auto** out = reinterpret_cast<void**>(ppv);
+    if (!out) return kE_POINTER;
+    *out = nullptr;
+    if (!self || !riid) return kE_INVALIDARG;
+    if (!GiGuidIs(riid, kIidIUnknown) && !GiGuidIs(riid, kIidIAgileObject) &&
+        !GiGuidIs(riid, kIidIGameInput)) {
+        return kE_NOINTERFACE;
+    }
+    GiAddRef(self, 0, 0, 0);
+    *out = self;
+    return kS_OK;
+}
+
 constexpr size_t kInfoOffDeviceId = 0x20;
 constexpr size_t kDeviceIdSize = 32;
 constexpr size_t kInfoOffSupportedInput = 0x68;
