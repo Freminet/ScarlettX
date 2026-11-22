@@ -53,6 +53,7 @@ struct Guid {
 };
 const Guid kIidIUnknown = {0x00000000u, 0x0000u, 0x0000u, {0xC0, 0, 0, 0, 0, 0, 0, 0x46}};
 const Guid kIidUnrelated = {0x12345678u, 0x1234u, 0x5678u, {1, 2, 3, 4, 5, 6, 7, 8}};
+const Guid kIidGameInput = {0x11BE2A7Eu, 0x4254u, 0x445Au, {0x9C, 0x09, 0xFF, 0xC4, 0x0F, 0x00, 0x69, 0x18}};
 
 struct DeviceEvents {
     int count = 0;
@@ -75,6 +76,9 @@ void GI_CALL OnDevice(uint64_t token, void* context, void* device, uint64_t time
 }
 
 constexpr int kGiGetCurrentReading = 4;
+constexpr int kGiGetNextReading = 5;
+constexpr int kGiGetPreviousReading = 6;
+constexpr int kGiFindDeviceFromId = 17;
 constexpr int kGiRegisterDeviceCallback = 9;
 constexpr int kDevGetDeviceInfo = 3;
 constexpr int kDevGetDeviceStatus = 4;
@@ -170,6 +174,12 @@ int main() {
     // 5. The same object through its vtable, as a title calls it.
     {
         void* input = reinterpret_cast<void*>(gi);
+        void* queried = input;
+        SX_CHECK_EQ(Call(input, 0, &kIidUnrelated, &queried), kNoInterface);
+        SX_CHECK(queried == nullptr);
+        SX_CHECK_EQ(Call(input, 0, &kIidGameInput, &queried), intptr_t{0});
+        SX_CHECK(queried == input);
+        SX_CHECK_EQ(Call(queried, 2), intptr_t{1});
 
         // A blocking-enumeration registration reports the gamepad before it
         // returns (values as the test title passes them).
@@ -210,6 +220,17 @@ int main() {
         bool id_set = false;
         for (int i = 0; i < 32; ++i) id_set = id_set || info[0x20 + i] != 0;
         SX_CHECK(id_set);
+        uint8_t saved_id[32];
+        std::memcpy(saved_id, info + 0x20, sizeof(saved_id));
+        void* restored_device = nullptr;
+        SX_CHECK_EQ(Call(input, kGiFindDeviceFromId, saved_id, &restored_device), intptr_t{0});
+        SX_CHECK(restored_device == device);
+        SX_CHECK_EQ(Call(restored_device, 2), intptr_t{1});
+        saved_id[31] ^= 1;
+        restored_device = device;
+        constexpr intptr_t kDeviceNotFound = static_cast<intptr_t>(static_cast<int32_t>(0x838A0002u));
+        SX_CHECK_EQ(Call(input, kGiFindDeviceFromId, saved_id, &restored_device), kDeviceNotFound);
+        SX_CHECK(restored_device == nullptr);
         const uint8_t* name = nullptr;
         std::memcpy(&name, info + 0x130, sizeof(name));
         SX_CHECK(name != nullptr);
@@ -249,7 +270,7 @@ int main() {
         const intptr_t sequence = Call(reading, kReadGetSequenceNumber, uintptr_t{kKindGamepad});
         SX_CHECK(sequence != 0);
         SX_CHECK_EQ(Call(reading, kReadGetSequenceNumber, uintptr_t{kKindKeyboard}), intptr_t{0});
-        SX_CHECK_EQ(Call(reading, 2), intptr_t{0});
+        void* first = reading;
 
         // The sequence number moves only when the state does.
         SX_CHECK_EQ(Call(input, kGiGetCurrentReading, uintptr_t{kKindGamepad}, static_cast<void*>(nullptr), &reading),
@@ -263,6 +284,21 @@ int main() {
         SX_CHECK_EQ(Call(reading, kReadGetSequenceNumber, uintptr_t{kKindGamepad}), sequence + 1);
         SX_CHECK_EQ(Call(reading, kReadGetGamepadState, &got) & 0xFF, intptr_t{1});
         SX_CHECK_EQ(got.Buttons, static_cast<uint32_t>(GAMEINPUT_GAMEPAD_B));
+        void* next = nullptr;
+        SX_CHECK_EQ(Call(input, kGiGetNextReading, first, uintptr_t{kKindGamepad}, device, &next), intptr_t{0});
+        SX_CHECK_EQ(Call(next, kReadGetGamepadState, &got) & 0xFF, intptr_t{1});
+        SX_CHECK_EQ(got.Buttons, static_cast<uint32_t>(GAMEINPUT_GAMEPAD_B));
+        Call(next, 2);
+        void* previous = nullptr;
+        SX_CHECK_EQ(Call(input, kGiGetPreviousReading, reading, uintptr_t{kKindGamepad}, device, &previous),
+                    intptr_t{0});
+        SX_CHECK_EQ(Call(previous, kReadGetSequenceNumber, uintptr_t{kKindGamepad}), sequence);
+        SX_CHECK_EQ(Call(previous, kReadGetTimestamp), Call(first, kReadGetTimestamp));
+        Call(previous, 2);
+        SX_CHECK_EQ(Call(input, kGiGetNextReading, reading, uintptr_t{kKindGamepad}, device, &next),
+                    kReadingNotFound);
+        SX_CHECK(next == nullptr);
+        Call(first, 2);
         Call(reading, 2);
 
         // There are no keyboard readings on this path, and no readings for

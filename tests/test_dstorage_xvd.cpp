@@ -7,7 +7,9 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <latch>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "scarlettx/io/dstorage_abi.h"
@@ -40,6 +42,10 @@ namespace {
 void OnSignal(uint64_t value, void* ctx) {
     auto* flag = static_cast<std::atomic<uint64_t>*>(ctx);
     flag->store(value, std::memory_order_release);
+}
+
+void WaitForReadGate(uint64_t, void* context) {
+    static_cast<std::latch*>(context)->wait();
 }
 
 struct SignalGate {
@@ -200,6 +206,9 @@ int main() {
     uint64_t status_arr = 0;
     SX_CHECK_EQ(DStorageCreateStatusArray(factory, 8, "TestStatus", &status_arr), 0);
     SX_CHECK_EQ(DStorageIsStatusComplete(status_arr, 0), 0u);
+    constexpr auto pending = static_cast<int32_t>(0x8000000Au);
+    SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 0), pending);
+    SX_CHECK(DStorageEnqueueStatus(queue, status_arr, 8) < 0);
 
     // 3. DirectStorage async file read + GDeflate/LZ-RLE decompression from disk
     std::vector<uint8_t> original(4096);
@@ -241,8 +250,11 @@ int main() {
         SX_CHECK(std::memcmp(mounted_bytes.data(), compressed.data(), comp_size) == 0);
     }
 
+    const auto launch_dir = std::filesystem::current_path();
+    const auto relative_xvd = std::filesystem::path(xvd_path).lexically_relative(launch_dir).string();
+    SX_CHECK(!relative_xvd.empty());
     uint64_t xvd_file = 0;
-    SX_CHECK_EQ(DStorageOpenXvdFile(factory, xvd_path.c_str(), &xvd_file), 0);
+    SX_CHECK_EQ(DStorageOpenXvdFile(factory, relative_xvd.c_str(), &xvd_file), 0);
     uint64_t file_sz = 0;
     SX_CHECK_EQ(DStorageGetFileSize(xvd_file, &file_sz), 0);
     SX_CHECK_EQ(file_sz, comp_size);
@@ -266,14 +278,71 @@ int main() {
     SX_CHECK_EQ(DStorageEnqueueRequest(queue, &req), 0);
     SX_CHECK_EQ(DStorageEnqueueStatus(queue, status_arr, 0), 0);
     SX_CHECK_EQ(DStorageEnqueueSignal(queue, &fence_val, 42, OnSignal, &cb_val), 0);
-    SX_CHECK_EQ(DStorageSubmit(queue), 0);
-    SX_CHECK_EQ(DStorageWaitForIdle(queue, 5000), 0);
+    std::filesystem::current_path(tmp_dir);
+    const auto xvd_submit_hr = DStorageSubmit(queue);
+    const auto xvd_idle_hr = DStorageWaitForIdle(queue, 5000);
+    std::filesystem::current_path(launch_dir);
+    SX_CHECK_EQ(xvd_submit_hr, 0);
+    SX_CHECK_EQ(xvd_idle_hr, 0);
 
     SX_CHECK_EQ(DStorageIsStatusComplete(status_arr, 0), 1u);
     SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 0), 0);
     SX_CHECK_EQ(fence_val, 42ull);
     SX_CHECK_EQ(cb_val.load(), 42ull);
     SX_CHECK(std::memcmp(dst.data(), original.data(), original.size()) == 0);
+
+// An open regular file must remain readable after the working directory changes.
+    const auto plain_path = tmp_dir / "plain.bin";
+    {
+        std::ofstream plain(plain_path, std::ios::binary | std::ios::trunc);
+        plain.write(reinterpret_cast<const char*>(original.data()), original.size());
+        SX_CHECK(plain.good());
+    }
+    const auto relative_path = plain_path.lexically_relative(launch_dir).string();
+    SX_CHECK(!relative_path.empty());
+    uint64_t plain_file = 0;
+    SX_CHECK_EQ(DStorageOpenFile(factory, relative_path.c_str(), &plain_file), 0);
+    std::vector<uint8_t> first(64), second(64);
+    DSTORAGE_REQUEST plain_req{};
+    plain_req.SourceType = DSTORAGE_REQUEST_SOURCE_FILE;
+    plain_req.SourceFileHandle = plain_file;
+    plain_req.SourceSize = 64;
+    plain_req.DestinationType = DSTORAGE_REQUEST_DESTINATION_MEMORY;
+    plain_req.DestinationSize = 64;
+    plain_req.SourceFileOffset = 3001;
+    plain_req.DestinationMemory = first.data();
+    std::latch read_gate(1);
+    SX_CHECK_EQ(DStorageEnqueueSignal(queue, nullptr, 0, WaitForReadGate, &read_gate), 0);
+    SX_CHECK_EQ(DStorageEnqueueRequest(queue, &plain_req), 0);
+    plain_req.SourceFileOffset = 71;
+    plain_req.DestinationMemory = second.data();
+    SX_CHECK_EQ(DStorageEnqueueRequest(queue, &plain_req), 0);
+    SX_CHECK_EQ(DStorageEnqueueStatus(queue, status_arr, 2), 0);
+    std::filesystem::current_path(tmp_dir);
+    const auto submit_hr = DStorageSubmit(queue);
+    // Hold the worker until CloseFile invalidates the public handle, so the
+    // reads are guaranteed to run after close has started.
+    std::thread open_gate([&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        uint64_t ignored = 0;
+        while (DStorageGetFileSize(plain_file, &ignored) == 0 &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        read_gate.count_down();
+    });
+    const auto close_hr = DStorageCloseFile(plain_file);
+    const bool data_ready_on_close = std::memcmp(first.data(), original.data() + 3001, first.size()) == 0 &&
+                                     std::memcmp(second.data(), original.data() + 71, second.size()) == 0;
+    open_gate.join();
+    const auto idle_hr = DStorageWaitForIdle(queue, 5000);
+    std::filesystem::current_path(launch_dir);
+    SX_CHECK_EQ(submit_hr, 0);
+    SX_CHECK_EQ(close_hr, 0);
+    SX_CHECK_EQ(idle_hr, 0);
+    SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 2), 0);
+    SX_CHECK(data_ready_on_close);
+    SX_CHECK(DStorageGetFileSize(plain_file, &file_sz) < 0);
 
     // 4. Cancellation leaves the destination untouched and reports no error.
     constexpr uint64_t cancel_mask = 0xFFFF0000ull;
@@ -323,6 +392,22 @@ int main() {
     SX_CHECK_EQ(err.FailureCount, 1u);
     SX_CHECK_EQ(err.FirstFailureHResult, invalid_arg);
     SX_CHECK_EQ(std::string(err.FailedRequestName), std::string("ReadPastEof"));
+
+    // A capacity-four queue submits a batch at two staged entries.
+    qdesc.Capacity = 4;
+    uint64_t auto_queue = 0;
+    SX_CHECK_EQ(DStorageCreateQueue(factory, &qdesc, &auto_queue), 0);
+    std::atomic<uint64_t> auto_signal{0};
+    SX_CHECK_EQ(DStorageEnqueueSignal(auto_queue, nullptr, 1, OnSignal, &auto_signal), 0);
+    SX_CHECK_EQ(DStorageEnqueueSignal(auto_queue, nullptr, 2, OnSignal, &auto_signal), 0);
+    SX_CHECK_EQ(DStorageWaitForIdle(auto_queue, 5000), 0);
+    SX_CHECK_EQ(auto_signal.load(), 2u);
+    SX_CHECK_EQ(DStorageEnqueueStatus(auto_queue, status_arr, 3), 0);
+    SX_CHECK_EQ(DStorageSubmit(auto_queue), 0);
+    SX_CHECK_EQ(DStorageWaitForIdle(auto_queue, 5000), 0);
+    SX_CHECK_EQ(auto_signal.load(), 2u);
+    SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 3), 0);
+    SX_CHECK_EQ(DStorageDestroyQueue(auto_queue), 0);
 
     SX_CHECK_EQ(DStorageCloseFile(xvd_file), 0);
     SX_CHECK_EQ(DStorageDestroyStatusArray(status_arr), 0);

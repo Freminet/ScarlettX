@@ -8,6 +8,10 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include "scarlettx/audio/xaudio2_abi.h"
 #include "scarlettx/gpu/d3d12_xs_abi.h"
 #include "scarlettx/io/dstorage_abi.h"
@@ -106,7 +110,7 @@ void SetEnv(const char* name, const std::string& val) {
 
 int main() {
     const std::filesystem::path bin_dir = SCARLETTX_BINARY_DIR;
-    const std::filesystem::path pkg_dir = bin_dir / "packages" / "scarlett_arena";
+    const std::filesystem::path pkg_dir = SCARLETTX_ARENA_PACKAGE_DIR;
     const std::filesystem::path xvd_path = pkg_dir / "arena_assets.xvd";
     const std::filesystem::path inproc_frame0 = bin_dir / "arena_inproc_frame0.ppm";
     const std::filesystem::path inproc_frame3 = bin_dir / "arena_inproc_frame3.ppm";
@@ -159,6 +163,22 @@ int main() {
     SetEnv("SCARLETTX_ARENA_LAST_FRAME", inproc_frame3.string());
     SetEnv("SCARLETTX_ARENA_WAV", inproc_wav.string());
 
+#if defined(_WIN32)
+    SetEnv("SCARLETTX_TRACE", "host-crt");
+    SX_CHECK(SetEnvironmentVariableW(L"SCARLETTX_TRACE", L"host-windows"));
+    SetEnv("SCARLETTX_PACKAGE_ROOT", "");
+    const auto check_host_environment = [] {
+        const char* trace = std::getenv("SCARLETTX_TRACE");
+        SX_CHECK(trace && std::strcmp(trace, "host-crt") == 0);
+        wchar_t windows_trace[32]{};
+        SX_CHECK(GetEnvironmentVariableW(L"SCARLETTX_TRACE", windows_trace, 32) == 12);
+        SX_CHECK(std::wstring(windows_trace) == L"host-windows");
+        SX_CHECK(std::getenv("SCARLETTX_PACKAGE_ROOT") == nullptr);
+        SX_CHECK(GetEnvironmentVariableW(L"SCARLETTX_PACKAGE_ROOT", nullptr, 0) == 0);
+        SX_CHECK(GetLastError() == ERROR_ENVVAR_NOT_FOUND);
+    };
+#endif
+
     scarlettx::EmulatorConfig inproc_cfg{};
     inproc_cfg.headless = true;
     inproc_cfg.prefer_warp = true;
@@ -173,6 +193,9 @@ int main() {
         std::cerr << "[FAIL] In-process boot failed: " << st.message << "\n";
     }
     SX_CHECK(st.ok());
+#if defined(_WIN32)
+    check_host_environment();
+#endif
 
     const auto f0_bytes = ReadFileBytes(inproc_frame0);
     const auto f3_bytes = ReadFileBytes(inproc_frame3);
@@ -195,17 +218,24 @@ int main() {
     proc_cfg.headless = true;
     proc_cfg.prefer_warp = true;
     proc_cfg.in_process = false;
-    // Relative: has to land in this process's working directory, not the guest's.
-    proc_cfg.rt_dump_path = proc_frame0.filename().string();
+    const auto launch_dir = std::filesystem::current_path();
+    const auto relative_dump = proc_frame0.lexically_relative(launch_dir);
+    const auto relative_package = pkg_dir.lexically_relative(launch_dir);
+    SX_CHECK(!relative_dump.empty() && !relative_dump.is_absolute());
+    SX_CHECK(!relative_package.empty() && !relative_package.is_absolute());
+    proc_cfg.rt_dump_path = relative_dump.string();
     std::error_code ec;
     std::filesystem::remove(proc_frame0, ec);
 
     scarlettx::Emulator emu_proc(proc_cfg);
-    auto st2 = emu_proc.BootPackage(pkg_dir.string());
+    auto st2 = emu_proc.BootPackage(relative_package.string());
     if (!st2.ok()) {
         std::cerr << "[FAIL] Child-process boot failed: " << st2.message << "\n";
     }
     SX_CHECK(st2.ok());
+#if defined(_WIN32)
+    check_host_environment();
+#endif
 
     const auto pf0_bytes = ReadFileBytes(proc_frame0);
     const auto pf3_bytes = ReadFileBytes(proc_frame3);

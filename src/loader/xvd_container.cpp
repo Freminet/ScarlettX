@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstring>
 #include <fstream>
+#include <limits>
+#include <mutex>
 
 namespace scarlettx {
 
@@ -44,6 +46,13 @@ constexpr size_t kOffUserDataLength = 0x258;
 
 }  // namespace
 
+struct XvdContainer::FileBacking {
+    explicit FileBacking(const std::string& path) : stream(path, std::ios::binary | std::ios::ate) {}
+    std::mutex mutex;
+    std::ifstream stream;
+    uint64_t size = 0;
+};
+
 Status XvdContainer::ParseHeaderFromBytes(const uint8_t* data, size_t size) {
     header_ = {};
     if (!data || size < kMinHeaderSize) {
@@ -78,10 +87,16 @@ Status XvdContainer::ParseHeaderFromBytes(const uint8_t* data, size_t size) {
 }
 
 Status XvdContainer::OpenFile(const std::string& path) {
-    std::ifstream ifs(path, std::ios::binary);
+    auto file = std::make_shared<FileBacking>(path);
+    auto& ifs = file->stream;
     if (!ifs) {
         return Status::Error(StatusCode::NotFound, "Failed to open XVD file: " + path);
     }
+    const auto length = ifs.tellg();
+    if (length < 0 || !ifs.seekg(0, std::ios::beg)) {
+        return Status::Error(StatusCode::IoError, "Cannot determine XVD file size: " + path);
+    }
+    file->size = static_cast<uint64_t>(length);
 
     std::vector<uint8_t> hdr(kMinHeaderSize);
     ifs.read(reinterpret_cast<char*>(hdr.data()), static_cast<std::streamsize>(hdr.size()));
@@ -95,8 +110,8 @@ Status XvdContainer::OpenFile(const std::string& path) {
     }
 
     path_ = path;
+    file_ = std::move(file);
     backing_bytes_.clear();
-    memory_backed_ = false;
     return Status::Ok();
 }
 
@@ -106,8 +121,8 @@ Status XvdContainer::OpenBytes(std::vector<uint8_t> data) {
         return st;
     }
     path_.clear();
+    file_.reset();
     backing_bytes_ = std::move(data);
-    memory_backed_ = true;
     return Status::Ok();
 }
 
@@ -127,27 +142,40 @@ Status XvdContainer::ReadUserData(
         return Status::Error(StatusCode::InvalidArgument, "XVD read out of user-data bounds");
     }
 
-    const uint64_t abs_offset = header_.user_data_offset + offset;
-    out_data.resize(static_cast<size_t>(size));
     if (size == 0) {
+        out_data.clear();
         return Status::Ok();
     }
+    if (offset > UINT64_MAX - header_.user_data_offset || size > out_data.max_size()) {
+        return Status::Error(StatusCode::InvalidArgument, "XVD read exceeds addressable range");
+    }
+    const uint64_t abs_offset = header_.user_data_offset + offset;
 
-    if (memory_backed_) {
-        if (abs_offset + size > backing_bytes_.size()) {
+    if (!file_) {
+        if (abs_offset > backing_bytes_.size() || size > backing_bytes_.size() - abs_offset) {
             return Status::Error(StatusCode::IoError, "In-memory XVD buffer truncated");
         }
+        out_data.resize(static_cast<size_t>(size));
         std::memcpy(out_data.data(), backing_bytes_.data() + abs_offset, static_cast<size_t>(size));
         return Status::Ok();
     }
 
-    std::ifstream ifs(path_, std::ios::binary);
-    if (!ifs) {
-        return Status::Error(StatusCode::IoError, "Failed to reopen XVD file: " + path_);
+    constexpr uint64_t max_offset = std::numeric_limits<std::streamoff>::max();
+    if (abs_offset > max_offset || size > max_offset - abs_offset ||
+        size > static_cast<uint64_t>(std::numeric_limits<std::streamsize>::max())) {
+        return Status::Error(StatusCode::InvalidArgument, "XVD read exceeds file stream range");
     }
+    if (abs_offset > file_->size || size > file_->size - abs_offset) {
+        return Status::Error(StatusCode::IoError, "XVD read exceeds archive size: " + path_);
+    }
+    std::lock_guard<std::mutex> lock(file_->mutex);
+    auto& ifs = file_->stream;
+    ifs.clear();
     ifs.seekg(static_cast<std::streamoff>(abs_offset), std::ios::beg);
-    ifs.read(reinterpret_cast<char*>(out_data.data()), static_cast<std::streamsize>(size));
-    if (static_cast<uint64_t>(ifs.gcount()) != size) {
+    if (!ifs) return Status::Error(StatusCode::IoError, "Cannot seek in XVD file: " + path_);
+    out_data.resize(static_cast<size_t>(size));
+    if (!ifs.read(reinterpret_cast<char*>(out_data.data()), static_cast<std::streamsize>(size))) {
+        out_data.clear();
         return Status::Error(StatusCode::IoError, "Short read from XVD file: " + path_);
     }
     return Status::Ok();

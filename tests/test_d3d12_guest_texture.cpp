@@ -11,6 +11,7 @@
 
 #include <d3d12.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -51,6 +52,7 @@ constexpr int kFenceGetCompletedValue = 8;
 constexpr uint32_t kWidth = 100;
 constexpr uint32_t kHeight = 60;
 constexpr uint32_t kMips = 7;  // 100x60 ... 1x1, the last four share the mip tail
+constexpr uint32_t kSlices = 2;
 
 struct Mip {
     uint32_t width, height, pitch;
@@ -141,16 +143,10 @@ void ReadBackAndCompare(Context& c, const std::vector<Mip>& mips, bool first_pas
     Call(c.readback, kResUnmap, uintptr_t{0}, static_cast<void*>(nullptr));
 }
 
-}  // namespace
-
-int main() {
-    // Select the guest-facing proxies (also set by CTest for this test).
-    _putenv_s("SCARLETTX_REAL_TITLE", "1");
-
-    Context c;
+void InitializeContext(Context& c, bool prefer_warp) {
     D3D12XBOX_CREATE_DEVICE_PARAMETERS params{};
     params.Version = 1;
-    params.PreferWarp = 1;
+    params.PreferWarp = prefer_warp ? 1 : 0;
     const IID device_iid = __uuidof(ID3D12Device);
     SX_REQUIRE(D3D12XboxCreateDevice(nullptr, &params, &device_iid, &c.device) >= 0);
     SX_REQUIRE(c.device != nullptr);
@@ -165,12 +161,25 @@ int main() {
     SX_REQUIRE(Call(c.device, kDevCreateFence, uintptr_t{0}, uintptr_t{0}, static_cast<void*>(nullptr),
                     &c.fence) == 0);
     SX_REQUIRE(c.queue && c.allocator && c.list && c.fence);
+}
+
+}  // namespace
+
+int main() {
+    // Select the guest-facing proxies (also set by CTest for this test).
+    _putenv_s("SCARLETTX_REAL_TITLE", "1");
+
+    const bool multi_adapter = std::getenv("SCARLETTX_TEST_MULTI_ADAPTER") != nullptr;
+    if (multi_adapter) _putenv_s("SCARLETTX_PREFER_WARP", "1");
+
+    Context c;
+    InitializeContext(c, true);
 
     D3D12_RESOURCE_DESC td = {};
     td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     td.Width = kWidth;
     td.Height = kHeight;
-    td.DepthOrArraySize = 1;
+    td.DepthOrArraySize = kSlices;
     td.MipLevels = kMips;
     td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     td.SampleDesc.Count = 1;
@@ -185,7 +194,7 @@ int main() {
     xd.Width = kWidth;
     xd.Height = kHeight;
     xd.MipLevels = kMips;
-    xd.ArraySize = 1;
+    xd.ArraySize = kSlices;
     xd.Format = 28;  // DXGI_FORMAT_R8G8B8A8_UNORM
     xd.SampleDesc.Count = 1;
     xd.BindFlags = 0x8;
@@ -193,11 +202,12 @@ int main() {
     auto layout = std::make_unique<XG_RESOURCE_LAYOUT>();
     xg::ComputeTexture2DLayout(xd, layout.get());
 
-    std::vector<Mip> mips(kMips);
+    std::vector<Mip> mips(kMips * kSlices);
     uint64_t offset = 0;
-    for (uint32_t m = 0; m < kMips; ++m) {
-        mips[m].width = kWidth >> m ? kWidth >> m : 1;
-        mips[m].height = kHeight >> m ? kHeight >> m : 1;
+    for (uint32_t m = 0; m < mips.size(); ++m) {
+        const uint32_t level = m % kMips;
+        mips[m].width = std::max(1u, kWidth >> level);
+        mips[m].height = std::max(1u, kHeight >> level);
         mips[m].pitch = (mips[m].width * 4 + 255) & ~255u;
         mips[m].offset = offset;
         mips[m].pixels.resize(static_cast<size_t>(mips[m].width) * 4 * mips[m].height);
@@ -213,17 +223,39 @@ int main() {
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     c.readback = CreateResource(c.device, D3D12_HEAP_TYPE_READBACK, bd, D3D12_RESOURCE_STATE_COPY_DEST);
 
+    Context other;
+    std::vector<Mip> other_mips;
+    if (multi_adapter) {
+        _putenv_s("SCARLETTX_PREFER_WARP", "0");
+        InitializeContext(other, false);
+        other.texture = CreateResource(other.device, D3D12_HEAP_TYPE_DEFAULT, td,
+                                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        other.readback = CreateResource(other.device, D3D12_HEAP_TYPE_READBACK, bd,
+                                        D3D12_RESOURCE_STATE_COPY_DEST);
+        auto* address = reinterpret_cast<uint8_t*>(Call(other.texture, kResGetGPUVirtualAddress));
+        SX_REQUIRE(address != nullptr);
+        other_mips = mips;
+        Fill(other_mips, 89);
+        for (uint32_t m = 0; m < other_mips.size(); ++m) {
+            SX_REQUIRE(xg::CopyIntoSubresource(*layout, address, m % kMips, m / kMips, other_mips[m].pixels.data(),
+                                             other_mips[m].width * 4));
+        }
+    }
+
     // Write the cooked data the way a title does, then use the texture.
     for (int pass = 0; pass < 2; ++pass) {
         Fill(mips, static_cast<uint8_t>(pass == 0 ? 3 : 171));
-        for (uint32_t m = 0; m < kMips; ++m) {
-            SX_REQUIRE(xg::CopyIntoSubresource(*layout, memory, m, 0, mips[m].pixels.data(), mips[m].width * 4));
+        for (uint32_t m = 0; m < mips.size(); ++m) {
+            SX_REQUIRE(xg::CopyIntoSubresource(*layout, memory, m % kMips, m / kMips,
+                                             mips[m].pixels.data(), mips[m].width * 4));
         }
         ReadBackAndCompare(c, mips, pass == 0);
     }
 
-    // Mip 1 arrives through a command-list copy, then mip 0 through guest
-    // memory: the upload of mip 0 must leave the copied mip alone.
+    if (multi_adapter) ReadBackAndCompare(other, other_mips, true);
+
+    // Mip 1 arrives through a command-list copy. Disjoint writes to mip 0
+    // and the mip tail must leave the copied mip alone.
     {
         D3D12_RESOURCE_DESC ud = bd;
         ud.Width = static_cast<uint64_t>(mips[1].pitch) * mips[1].height;
@@ -267,12 +299,17 @@ int main() {
 
         for (size_t i = 0; i < mips[0].pixels.size(); ++i) mips[0].pixels[i] = static_cast<uint8_t>(i * 3 + 9);
         SX_REQUIRE(xg::CopyIntoSubresource(*layout, memory, 0, 0, mips[0].pixels.data(), mips[0].width * 4));
+        Mip& tail = mips.back();
+        tail.pixels[0] ^= 0xFF;
+        SX_REQUIRE(xg::CopyIntoSubresource(*layout, memory, kMips - 1, kSlices - 1,
+                                         tail.pixels.data(), tail.width * 4));
         ReadBackAndCompare(c, mips, false);
     }
 
     // A planar format has no single-plane console layout here: no guest
     // memory is handed out (when the adapter can create such a texture at all).
     D3D12_RESOURCE_DESC nv12 = td;
+    nv12.DepthOrArraySize = 1;
     nv12.Width = 64;
     nv12.Height = 64;
     nv12.MipLevels = 1;
@@ -311,6 +348,7 @@ int main() {
         SX_REQUIRE(Call(heap, 2) == 1);
 
         D3D12_RESOURCE_DESC placed_desc = td;
+        placed_desc.DepthOrArraySize = 1;
         placed_desc.Width = 256;
         placed_desc.Height = 128;
         placed_desc.MipLevels = 1;

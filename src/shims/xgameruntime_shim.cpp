@@ -12,7 +12,9 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iostream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -136,7 +138,6 @@ struct XGameSaveProvider {
     std::string config_id;
     fs::path root_dir;
     uint64_t max_quota_bytes = kSaveQuotaBytes;
-    std::mutex mutex;
 };
 
 struct XGameSaveContainer {
@@ -146,13 +147,16 @@ struct XGameSaveContainer {
 };
 
 struct XGameSaveUpdate {
-    XGameSaveContainer* container = nullptr;
+    fs::path container_dir;
     std::string display_name;
     std::map<std::string, std::vector<uint8_t>> pending_writes;
     std::vector<std::string> pending_deletes;
 };
 
 namespace {
+
+// Multiple provider handles can address the same on-disk saves.
+std::mutex g_save_io_mutex;
 
 std::string SanitizeSaveName(const std::string& raw) {
     std::string out;
@@ -179,6 +183,19 @@ fs::path ResolveSaveRoot(const std::string& config_id) {
                         ? fs::path(env_root)
                         : (fs::temp_directory_path() / "scarlettx_saves");
     return base / SanitizeSaveName(config_id);
+}
+
+XGameResult OpenSaveBlob(const fs::path& path, std::ifstream& stream, uint32_t& size) {
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec)) return XGR_E_GS_BLOB_NOT_FOUND;
+    stream.open(path, std::ios::binary | std::ios::ate);
+    if (!stream) return XGR_E_FAIL;
+    const auto length = stream.tellg();
+    if (length < 0 || length > std::numeric_limits<uint32_t>::max()) return XGR_E_FAIL;
+    stream.seekg(0, std::ios::beg);
+    if (!stream) return XGR_E_FAIL;
+    size = static_cast<uint32_t>(length);
+    return XGR_S_OK;
 }
 
 uint64_t ComputeDirectorySize(const fs::path& dir) {
@@ -591,7 +608,10 @@ XGameResult XGameSaveInitializeProvider(
     p->config_id = configurationId;
     p->root_dir = ResolveSaveRoot(p->config_id);
     std::error_code ec;
-    fs::create_directories(p->root_dir, ec);
+    {
+        std::lock_guard<std::mutex> lock(g_save_io_mutex);
+        fs::create_directories(p->root_dir, ec);
+    }
     if (ec) {
         delete p;
         return XGR_E_FAIL;
@@ -656,7 +676,7 @@ XGameResult XGameSaveGetRemainingQuota(
     if (!provider || !remainingQuota) {
         return XGR_E_INVALIDARG;
     }
-    std::lock_guard<std::mutex> lock(provider->mutex);
+    std::lock_guard<std::mutex> lock(g_save_io_mutex);
     const uint64_t used = ComputeDirectorySize(provider->root_dir);
     *remainingQuota = (used >= provider->max_quota_bytes)
                           ? 0
@@ -675,12 +695,19 @@ XGameResult XGameSaveCreateContainer(
     if (!c) {
         return XGR_E_OUTOFMEMORY;
     }
-    provider->ref_count.fetch_add(1, std::memory_order_relaxed);
     c->provider = provider;
     c->name = name;
     c->dir_path = provider->root_dir / SanitizeSaveName(name);
     std::error_code ec;
-    fs::create_directories(c->dir_path, ec);
+    {
+        std::lock_guard<std::mutex> lock(g_save_io_mutex);
+        fs::create_directories(c->dir_path, ec);
+    }
+    if (ec) {
+        delete c;
+        return XGR_E_FAIL;
+    }
+    provider->ref_count.fetch_add(1, std::memory_order_relaxed);
     RegisterValidHandle(c);
     *containerContext = c;
     return XGR_S_OK;
@@ -704,7 +731,7 @@ XGameResult XGameSaveDeleteContainer(
     if (!provider || !IsValidSaveName(name)) {
         return XGR_E_INVALIDARG;
     }
-    std::lock_guard<std::mutex> lock(provider->mutex);
+    std::lock_guard<std::mutex> lock(g_save_io_mutex);
     std::error_code ec;
     fs::remove_all(provider->root_dir / SanitizeSaveName(name), ec);
     return ec ? XGR_E_FAIL : XGR_S_OK;
@@ -723,7 +750,7 @@ XGameResult XGameSaveEnumerateContainerInfo(
         uint64_t total_size;
     };
     std::vector<Entry> entries;
-    std::unique_lock<std::mutex> lock(provider->mutex);
+    std::unique_lock<std::mutex> lock(g_save_io_mutex);
     std::error_code ec;
     if (!fs::exists(provider->root_dir, ec)) {
         return XGR_S_OK;
@@ -732,16 +759,16 @@ XGameResult XGameSaveEnumerateContainerInfo(
         if (!entry.is_directory(ec)) {
             continue;
         }
-        const std::string cname = entry.path().filename().string();
+        const std::string name = entry.path().filename().string();
         uint32_t blob_count = 0;
         uint64_t total_size = 0;
-        for (const auto& f : fs::directory_iterator(entry.path(), ec)) {
-            if (f.is_regular_file(ec)) {
+        for (const auto& file : fs::directory_iterator(entry.path(), ec)) {
+            if (file.is_regular_file(ec)) {
                 ++blob_count;
-                total_size += f.file_size(ec);
+                total_size += file.file_size(ec);
             }
         }
-        entries.push_back({cname, blob_count, total_size});
+        entries.push_back({name, blob_count, total_size});
     }
     lock.unlock();
     for (const auto& entry : entries) {
@@ -770,7 +797,7 @@ XGameResult XGameSaveCreateUpdate(
     if (!u) {
         return XGR_E_OUTOFMEMORY;
     }
-    u->container = container;
+    u->container_dir = container->dir_path;
     u->display_name = displayName ? displayName : container->name;
     RegisterValidHandle(u);
     *updateContext = u;
@@ -797,6 +824,7 @@ XGameResult XGameSaveSubmitBlobWrite(
     if (byteCount > 0) {
         copy.assign(data, data + byteCount);
     }
+    std::lock_guard<std::mutex> lock(g_save_io_mutex);
     updateContext->pending_writes[blobName] = std::move(copy);
     return XGR_S_OK;
 }
@@ -807,27 +835,66 @@ XGameResult XGameSaveSubmitBlobDelete(
     if (!updateContext || !IsValidSaveName(blobName)) {
         return XGR_E_INVALIDARG;
     }
+    std::lock_guard<std::mutex> lock(g_save_io_mutex);
     updateContext->pending_writes.erase(blobName);
     updateContext->pending_deletes.emplace_back(blobName);
     return XGR_S_OK;
 }
 
-XGameResult XGameSaveSubmitUpdate(XGameSaveUpdateHandle updateContext) {
-    if (!updateContext || !updateContext->container || !updateContext->container->provider) {
-        return XGR_E_INVALIDARG;
-    }
-    auto* provider = updateContext->container->provider;
-    std::lock_guard<std::mutex> lock(provider->mutex);
+static XGameResult CommitSaveUpdate(const XGameSaveUpdate& update) {
+    std::lock_guard<std::mutex> lock(g_save_io_mutex);
 
     std::error_code ec;
-    fs::create_directories(updateContext->container->dir_path, ec);
+    const fs::path& container_dir = update.container_dir;
+    fs::create_directories(container_dir, ec);
+    if (ec) return XGR_E_FAIL;
 
-    for (const auto& del_name : updateContext->pending_deletes) {
-        fs::remove(updateContext->container->dir_path / SanitizeSaveName(del_name), ec);
+    struct StagingDirectory {
+        fs::path path;
+        bool keep_for_recovery = false;
+        ~StagingDirectory() {
+            if (!path.empty() && !keep_for_recovery) {
+                std::error_code ignored;
+                fs::remove_all(path, ignored);
+            }
+        }
+    } staging;
+    if (!update.pending_writes.empty() || !update.pending_deletes.empty()) {
+        static std::atomic<uint64_t> sequence{0};
+        const auto timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        do {
+            // The tilde keeps staging directories outside the blob-name namespace.
+            const fs::path candidate = container_dir / ("~save-" + std::to_string(timestamp) + "-" +
+                std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
+            if (fs::create_directory(candidate, ec)) staging.path = candidate;
+            if (ec) return XGR_E_FAIL;
+        } while (staging.path.empty());
     }
-    for (const auto& [blob_name, bytes] : updateContext->pending_writes) {
-        fs::path file_path = updateContext->container->dir_path / SanitizeSaveName(blob_name);
-        std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
+
+    struct Change {
+        fs::path destination;
+        fs::path temporary;
+        fs::path backup;
+        bool had_original = false;
+    };
+    std::vector<Change> changes;
+    const auto add_change = [&](const fs::path& destination, const fs::path& temporary) {
+        changes.push_back({destination, temporary, staging.path / ("backup-" + std::to_string(changes.size()))});
+    };
+    for (const auto& del_name : update.pending_deletes) {
+        const fs::path destination = container_dir / SanitizeSaveName(del_name);
+        if (fs::exists(destination, ec) && !fs::is_regular_file(destination, ec)) return XGR_E_FAIL;
+        if (ec) return XGR_E_FAIL;
+        add_change(destination, {});
+    }
+    for (const auto& [blob_name, bytes] : update.pending_writes) {
+        const fs::path destination = container_dir / SanitizeSaveName(blob_name);
+        if ((fs::exists(destination, ec) && !fs::is_regular_file(destination, ec)) || ec ||
+            bytes.size() > static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+            return XGR_E_FAIL;
+        }
+        const fs::path temporary = staging.path / std::to_string(changes.size());
+        std::ofstream ofs(temporary, std::ios::binary | std::ios::trunc);
         if (!ofs) {
             return XGR_E_FAIL;
         }
@@ -835,11 +902,54 @@ XGameResult XGameSaveSubmitUpdate(XGameSaveUpdateHandle updateContext) {
             ofs.write(reinterpret_cast<const char*>(bytes.data()),
                       static_cast<std::streamsize>(bytes.size()));
         }
-        if (!ofs.good()) {
+        ofs.close();
+        if (!ofs) {
             return XGR_E_FAIL;
         }
+        add_change(destination, temporary);
     }
-    return XGR_S_OK;
+
+    auto change = changes.begin();
+    for (; change != changes.end(); ++change) {
+        change->had_original = fs::exists(change->destination, ec);
+        if (ec) break;
+        if (change->temporary.empty()) {
+            if (change->had_original) fs::rename(change->destination, change->backup, ec);
+        } else {
+            if (change->had_original) {
+                fs::copy_file(change->destination, change->backup, ec);
+                if (ec) break;
+            }
+            fs::rename(change->temporary, change->destination, ec);
+        }
+        if (ec) break;
+    }
+    if (change == changes.end()) return XGR_S_OK;
+
+    // Unwind only completed changes, in reverse order for names that alias.
+    while (change != changes.begin()) {
+        --change;
+        if (change->had_original) {
+            fs::rename(change->backup, change->destination, ec);
+        } else if (!change->temporary.empty()) {
+            fs::remove(change->destination, ec);
+        } else {
+            continue;
+        }
+        if (ec) {
+            staging.keep_for_recovery = true;
+            std::cerr << "[ScarlettX][XGameSave] Could not roll back " << change->destination
+                      << ": " << ec.message() << "\n";
+            if (change->had_original) {
+                std::cerr << "[ScarlettX][XGameSave] Original blob retained at " << change->backup << "\n";
+            }
+        }
+    }
+    return XGR_E_FAIL;
+}
+
+XGameResult XGameSaveSubmitUpdate(XGameSaveUpdateHandle updateContext) {
+    return updateContext ? CommitSaveUpdate(*updateContext) : XGR_E_INVALIDARG;
 }
 
 XGameResult XGameSaveSubmitUpdateAsync(
@@ -848,8 +958,11 @@ XGameResult XGameSaveSubmitUpdateAsync(
     if (!updateContext || !async) {
         return XGR_E_INVALIDARG;
     }
-    return BeginAsyncOperation(async, [updateContext](XAsyncState* st) {
-        XGameResult hr = XGameSaveSubmitUpdate(updateContext);
+    std::unique_lock<std::mutex> lock(g_save_io_mutex);
+    XGameSaveUpdate snapshot = *updateContext;
+    lock.unlock();
+    return BeginAsyncOperation(async, [snapshot = std::move(snapshot)](XAsyncState* st) {
+        XGameResult hr = CommitSaveUpdate(snapshot);
         CompleteAsyncState(st, hr, 0);
     });
 }
@@ -870,8 +983,7 @@ XGameResult XGameSaveReadBlobData(
     if (!container || !blobNames || !countOfBlobs || !blobData) {
         return XGR_E_INVALIDARG;
     }
-    auto* provider = container->provider;
-    std::lock_guard<std::mutex> lock(provider->mutex);
+    std::lock_guard<std::mutex> lock(g_save_io_mutex);
 
     const uint32_t requested = *countOfBlobs;
     const size_t headers_bytes = sizeof(XGameSaveBlob) * requested;
@@ -888,17 +1000,12 @@ XGameResult XGameSaveReadBlobData(
             return XGR_E_INVALIDARG;
         }
         const std::string name = blobNames[i];
-        fs::path file_path = container->dir_path / SanitizeSaveName(name);
-        std::ifstream ifs(file_path, std::ios::binary | std::ios::ate);
-        if (!ifs) {
-            return XGR_E_GS_BLOB_NOT_FOUND;
-        }
-        const std::streamsize fsize = ifs.tellg();
-        ifs.seekg(0, std::ios::beg);
-
+        std::ifstream ifs;
+        uint32_t data_len = 0;
+        const auto result = OpenSaveBlob(container->dir_path / SanitizeSaveName(name), ifs, data_len);
+        if (result != XGR_S_OK) return result;
         const size_t name_len = name.size() + 1;
-        const size_t data_len = static_cast<size_t>(fsize > 0 ? fsize : 0);
-        if (cursor + name_len + data_len > blobsSize) {
+        if (name_len > blobsSize - cursor || data_len > blobsSize - cursor - name_len) {
             return XGR_E_GS_PROVIDED_BUFFER_TOO_SMALL;
         }
 
@@ -907,13 +1014,13 @@ XGameResult XGameSaveReadBlobData(
         cursor += name_len;
 
         uint8_t* data_dst = base + cursor;
-        if (data_len > 0) {
-            ifs.read(reinterpret_cast<char*>(data_dst), fsize);
+        if (data_len > 0 && !ifs.read(reinterpret_cast<char*>(data_dst), data_len)) {
+            return XGR_E_FAIL;
         }
         cursor += data_len;
 
         blobData[i].info.name = name_dst;
-        blobData[i].info.size = static_cast<uint32_t>(data_len);
+        blobData[i].info.size = data_len;
         blobData[i].data = data_dst;
         ++read_count;
     }
@@ -939,9 +1046,8 @@ XGameResult XGameSaveReadBlobDataAsync(
         names.emplace_back(blobNames[i]);
     }
 
-    return BeginAsyncOperation(async, [container, names = std::move(names)](XAsyncState* st) {
-        auto* provider = container->provider;
-        std::lock_guard<std::mutex> lock(provider->mutex);
+    return BeginAsyncOperation(async, [directory = container->dir_path, names = std::move(names)](XAsyncState* st) {
+        std::unique_lock<std::mutex> lock(g_save_io_mutex);
 
         // Compute packed payload size: [uint32_t count] + per-blob (name_len, data_len, name, data)
         // Also compute GDK caller buffer requirement for XGameSaveReadBlobDataResult.
@@ -950,21 +1056,26 @@ XGameResult XGameSaveReadBlobDataAsync(
         blobs.reserve(names.size());
 
         for (const auto& name : names) {
-            fs::path file_path = container->dir_path / SanitizeSaveName(name);
-            std::ifstream ifs(file_path, std::ios::binary | std::ios::ate);
-            if (!ifs) {
-                CompleteAsyncState(st, XGR_E_GS_BLOB_NOT_FOUND, 0);
-                return;
+            std::ifstream ifs;
+            uint32_t size = 0;
+            auto result = OpenSaveBlob(directory / SanitizeSaveName(name), ifs, size);
+            std::vector<uint8_t> bytes;
+            if (result == XGR_S_OK) {
+                bytes.resize(size);
+                if (size > 0 && !ifs.read(reinterpret_cast<char*>(bytes.data()), size)) {
+                    result = XGR_E_FAIL;
+                }
             }
-            const std::streamsize fsize = ifs.tellg();
-            ifs.seekg(0, std::ios::beg);
-            std::vector<uint8_t> bytes(static_cast<size_t>(fsize > 0 ? fsize : 0));
-            if (!bytes.empty()) {
-                ifs.read(reinterpret_cast<char*>(bytes.data()), fsize);
+            if (result != XGR_S_OK) {
+                lock.unlock();
+                CompleteAsyncState(st, result, 0);
+                return;
             }
             required_gdk_size += (name.size() + 1) + bytes.size();
             blobs.emplace_back(name, std::move(bytes));
         }
+
+        lock.unlock();
 
         // Serialize into st->result_payload for XGameSaveReadBlobDataResult.
         std::vector<uint8_t> packed;
@@ -1057,9 +1168,8 @@ XGameResult XGameSaveEnumerateBlobInfo(
     if (!container || !callback) {
         return XGR_E_INVALIDARG;
     }
-    auto* provider = container->provider;
     std::vector<std::pair<std::string, uint32_t>> entries;
-    std::unique_lock<std::mutex> lock(provider->mutex);
+    std::unique_lock<std::mutex> lock(g_save_io_mutex);
     std::error_code ec;
     if (!fs::exists(container->dir_path, ec)) {
         return XGR_S_OK;
@@ -1068,13 +1178,12 @@ XGameResult XGameSaveEnumerateBlobInfo(
         if (!entry.is_regular_file(ec)) {
             continue;
         }
-        entries.emplace_back(entry.path().filename().string(),
-                             static_cast<uint32_t>(entry.file_size(ec)));
+        entries.emplace_back(entry.path().filename().string(), static_cast<uint32_t>(entry.file_size(ec)));
     }
     lock.unlock();
-    for (const auto& [bname, size] : entries) {
+    for (const auto& [name, size] : entries) {
         XGameSaveBlobInfo info{};
-        info.name = bname.c_str();
+        info.name = name.c_str();
         info.size = size;
         if (!callback(&info, context)) {
             break;

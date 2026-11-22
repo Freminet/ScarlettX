@@ -20,7 +20,7 @@ std::string ToLower(std::string s) {
 int main() {
     scarlettx::DllRedirectionTable redirects;
     const std::filesystem::path rt_exe =
-        std::filesystem::path(SCARLETTX_BINARY_DIR) / "packages" / "rt_showcase" / "rt_showcase.exe";
+        SCARLETTX_RT_SHOWCASE_EXE;
     SX_REQUIRE(std::filesystem::exists(rt_exe));
 
     scarlettx::PeImageInfo info;

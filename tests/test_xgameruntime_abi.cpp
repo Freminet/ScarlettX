@@ -8,6 +8,10 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include "scarlettx/gdk/xgameruntime_abi.h"
 
 #define CHECK(cond)                                                              \
@@ -79,6 +83,18 @@ bool SCARLETTX_GDK_CALLBACK EnumBlobsCb(const XGameSaveBlobInfo* info, void* ctx
         names->emplace_back(info->name);
     }
     return true;
+}
+
+struct SaveEnumerationProbe {
+    XGameSaveProviderHandle provider;
+    XGameResult result = XGR_E_FAIL;
+};
+
+bool SCARLETTX_GDK_CALLBACK ProbeSaveQuota(const XGameSaveBlobInfo*, void* ctx) {
+    auto* probe = static_cast<SaveEnumerationProbe*>(ctx);
+    int64_t quota = 0;
+    probe->result = XGameSaveGetRemainingQuota(probe->provider, &quota);
+    return false;
 }
 
 struct ReentrantEnum {
@@ -314,6 +330,9 @@ int main() {
     std::vector<std::string> blobs;
     CHECK(XGameSaveEnumerateBlobInfo(container, &blobs, EnumBlobsCb) == XGR_S_OK);
     CHECK(blobs.size() == 1 && blobs[0] == "profile.dat");
+    SaveEnumerationProbe probe{provider};
+    CHECK(XGameSaveEnumerateBlobInfo(container, &probe, ProbeSaveQuota) == XGR_S_OK);
+    CHECK(probe.result == XGR_S_OK);
 
     // Enumeration callbacks may call back into XGameSave
     ReentrantEnum reentrant{provider};
@@ -346,6 +365,80 @@ int main() {
     CHECK(async_read_count == 1);
     CHECK(async_blob_out[0].info.size == payload.size());
     CHECK(std::memcmp(async_blob_out[0].data, payload.data(), payload.size()) == 0);
+
+    XTaskQueueHandle read_queue = nullptr;
+    CHECK(XTaskQueueCreate(XTaskQueueDispatchMode_Manual, XTaskQueueDispatchMode_Manual, &read_queue) == XGR_S_OK);
+    XGameSaveContainerHandle read_container = nullptr;
+    CHECK(XGameSaveCreateContainer(provider, "slot_0", &read_container) == XGR_S_OK);
+    XAsyncBlock deferred_read{};
+    deferred_read.queue = read_queue;
+    CHECK(XGameSaveReadBlobDataAsync(read_container, read_names, 1, &deferred_read) == XGR_S_OK);
+    XGameSaveCloseContainer(read_container);
+    CHECK(XTaskQueueDispatch(read_queue, XTaskQueuePort_Work, 0));
+    async_read_count = 0;
+    CHECK(XGameSaveReadBlobDataResult(&deferred_read, async_read_buf.size(), async_blob_out, &async_read_count) ==
+          XGR_S_OK);
+    CHECK(async_read_count == 1 && async_blob_out[0].info.size == payload.size());
+    CHECK(std::memcmp(async_blob_out[0].data, payload.data(), payload.size()) == 0);
+    XTaskQueueCloseHandle(read_queue);
+
+    const auto blob_dir = save_root / "00000000-0000-0000-0000-00005ca00001" / "slot_0";
+    CHECK(fs::create_directory(blob_dir / "blocked.dat"));
+    XGameSaveUpdateHandle failed_update = nullptr;
+    CHECK(XGameSaveCreateUpdate(container, "Failed save", &failed_update) == XGR_S_OK);
+    CHECK(XGameSaveSubmitBlobDelete(failed_update, "profile.dat") == XGR_S_OK);
+    CHECK(XGameSaveSubmitBlobWrite(failed_update, "blocked.dat", nullptr, 0) == XGR_S_OK);
+    CHECK(XGameSaveSubmitUpdate(failed_update) == XGR_E_FAIL);
+    XGameSaveCloseUpdate(failed_update);
+    CHECK(fs::remove(blob_dir / "blocked.dat"));
+    read_count = 1;
+    CHECK(XGameSaveReadBlobData(container, read_names, &read_count, read_buf.size(), blob_out) == XGR_S_OK);
+    CHECK(blob_out[0].info.size == payload.size());
+    CHECK(std::memcmp(blob_out[0].data, payload.data(), payload.size()) == 0);
+
+#if defined(_WIN32)
+    // Allow staging and reads, but prevent replacement of the destination.
+    const auto locked_path = blob_dir / "locked.dat";
+    CHECK(fs::copy_file(blob_dir / "profile.dat", locked_path));
+    failed_update = nullptr;
+    CHECK(XGameSaveCreateUpdate(container, "Rollback save", &failed_update) == XGR_S_OK);
+    CHECK(XGameSaveSubmitBlobDelete(failed_update, "profile.dat") == XGR_S_OK);
+    CHECK(XGameSaveSubmitBlobWrite(failed_update, "locked.dat", nullptr, 0) == XGR_S_OK);
+    const HANDLE locked = CreateFileW(locked_path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                      nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    CHECK(locked != INVALID_HANDLE_VALUE);
+    const auto failed_result = XGameSaveSubmitUpdate(failed_update);
+    CloseHandle(locked);
+    XGameSaveCloseUpdate(failed_update);
+    CHECK(failed_result == XGR_E_FAIL);
+    CHECK(fs::file_size(locked_path) == payload.size());
+    CHECK(fs::remove(locked_path));
+    read_count = 1;
+    CHECK(XGameSaveReadBlobData(container, read_names, &read_count, read_buf.size(), blob_out) == XGR_S_OK);
+    CHECK(blob_out[0].info.size == payload.size());
+    CHECK(std::memcmp(blob_out[0].data, payload.data(), payload.size()) == 0);
+#endif
+
+    const uint8_t replacement_byte = 42;
+    XTaskQueueHandle write_queue = nullptr;
+    CHECK(XTaskQueueCreate(XTaskQueueDispatchMode_Manual, XTaskQueueDispatchMode_Manual, &write_queue) == XGR_S_OK);
+    XGameSaveContainerHandle write_container = nullptr;
+    CHECK(XGameSaveCreateContainer(provider, "slot_0", &write_container) == XGR_S_OK);
+    XGameSaveUpdateHandle replacement = nullptr;
+    CHECK(XGameSaveCreateUpdate(write_container, "Replace save", &replacement) == XGR_S_OK);
+    CHECK(XGameSaveSubmitBlobWrite(replacement, "profile.dat", &replacement_byte, 1) == XGR_S_OK);
+    XAsyncBlock deferred_write{};
+    deferred_write.queue = write_queue;
+    CHECK(XGameSaveSubmitUpdateAsync(replacement, &deferred_write) == XGR_S_OK);
+    CHECK(XGameSaveSubmitBlobDelete(replacement, "profile.dat") == XGR_S_OK);
+    XGameSaveCloseUpdate(replacement);
+    XGameSaveCloseContainer(write_container);
+    CHECK(XTaskQueueDispatch(write_queue, XTaskQueuePort_Work, 0));
+    CHECK(XGameSaveSubmitUpdateResult(&deferred_write) == XGR_S_OK);
+    XTaskQueueCloseHandle(write_queue);
+    read_count = 1;
+    CHECK(XGameSaveReadBlobData(container, read_names, &read_count, read_buf.size(), blob_out) == XGR_S_OK);
+    CHECK(blob_out[0].info.size == 1 && blob_out[0].data[0] == replacement_byte);
 
     // Blob delete + verify empty enumeration
     XGameSaveUpdateHandle del_update = nullptr;
