@@ -3,6 +3,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
+#include <optional>
+#include <vector>
 
 #include "scarlettx/loader/pe_mapper.h"
 #include "scarlettx/runtime/virtual_drive.h"
@@ -14,6 +17,49 @@
 namespace scarlettx {
 
 namespace {
+
+#if defined(_WIN32)
+std::mutex g_boot_mutex;
+
+class BootEnvironment {
+public:
+    void Set(const char* name, const char* value) {
+        Entry entry;
+        entry.name = name;
+        entry.wide_name.assign(entry.name.begin(), entry.name.end());
+        if (const char* previous = std::getenv(name)) entry.crt_value = previous;
+        const DWORD capacity = GetEnvironmentVariableW(entry.wide_name.c_str(), nullptr, 0);
+        if (capacity != 0) {
+            std::wstring previous(capacity, L'\0');
+            const DWORD length = GetEnvironmentVariableW(entry.wide_name.c_str(), previous.data(), capacity);
+            if (length < capacity) {
+                previous.resize(length);
+                entry.windows_value = std::move(previous);
+            }
+        }
+        entries_.push_back(std::move(entry));
+        SetEnvironmentVariableA(name, value);
+        _putenv_s(name, value);
+    }
+
+    ~BootEnvironment() {
+        for (auto entry = entries_.rbegin(); entry != entries_.rend(); ++entry) {
+            _putenv_s(entry->name.c_str(), entry->crt_value.c_str());
+            SetEnvironmentVariableW(entry->wide_name.c_str(),
+                                    entry->windows_value ? entry->windows_value->c_str() : nullptr);
+        }
+    }
+
+private:
+    struct Entry {
+        std::string name;
+        std::wstring wide_name;
+        std::string crt_value;
+        std::optional<std::wstring> windows_value;
+    };
+    std::vector<Entry> entries_;
+};
+#endif
 
 std::string FindGameConfigInDir(const std::string& package_dir) {
     const std::filesystem::path dir(package_dir);
@@ -102,10 +148,9 @@ Status Emulator::BootPackage(const std::string& package_dir) {
         }
     }
 
-    auto set_env = [](const char* key, const char* value) {
-        SetEnvironmentVariableA(key, value);
-        _putenv_s(key, value);
-    };
+    // The guest's settings and package drive are process-wide.
+    const std::lock_guard<std::mutex> lock(g_boot_mutex);
+    BootEnvironment environment;
 
     if (!shim_dir.empty()) {
         std::string new_path = shim_dir;
@@ -114,17 +159,17 @@ Status Emulator::BootPackage(const std::string& package_dir) {
             new_path += ";";
             new_path += cur_path;
         }
-        set_env("PATH", new_path.c_str());
+        environment.Set("PATH", new_path.c_str());
     }
 
-    set_env("SCARLETTX_HEADLESS", config_.headless ? "1" : "0");
-    set_env("SCARLETTX_PREFER_WARP", config_.prefer_warp ? "1" : "0");
-    set_env("SCARLETTX_TRACE", config_.trace ? "1" : "0");
-    set_env("SCARLETTX_STATS", config_.stats ? "1" : "0");
+    environment.Set("SCARLETTX_HEADLESS", config_.headless ? "1" : "0");
+    environment.Set("SCARLETTX_PREFER_WARP", config_.prefer_warp ? "1" : "0");
+    environment.Set("SCARLETTX_TRACE", config_.trace ? "1" : "0");
+    environment.Set("SCARLETTX_STATS", config_.stats ? "1" : "0");
     if (!report.config.title_id.empty()) {
-        set_env("SCARLETTX_TITLE_ID", report.config.title_id.c_str());
+        environment.Set("SCARLETTX_TITLE_ID", report.config.title_id.c_str());
     }
-    set_env("SCARLETTX_PACKAGE_ROOT", abs_pkg_dir.c_str());
+    environment.Set("SCARLETTX_PACKAGE_ROOT", abs_pkg_dir.c_str());
 
     // Real Xbox Series X|S titles (e.g. Unity Game Core nativePlugins.txt) reference G:/.
     // The mapping is skipped when G: is already assigned on the host.
@@ -136,13 +181,13 @@ Status Emulator::BootPackage(const std::string& package_dir) {
     }
 
     if (config_.max_frames > 0) {
-        set_env("SCARLETTX_MAX_FRAMES", std::to_string(config_.max_frames).c_str());
+        environment.Set("SCARLETTX_MAX_FRAMES", std::to_string(config_.max_frames).c_str());
     }
     if (!rt_dump_path.empty()) {
-        set_env("SCARLETTX_RT_DUMP", rt_dump_path.c_str());
+        environment.Set("SCARLETTX_RT_DUMP", rt_dump_path.c_str());
     }
     if (!raster_dump_path.empty()) {
-        set_env("SCARLETTX_RASTER_DUMP", raster_dump_path.c_str());
+        environment.Set("SCARLETTX_RASTER_DUMP", raster_dump_path.c_str());
     }
 
     if (config_.in_process) {
@@ -182,7 +227,7 @@ Status Emulator::BootPackage(const std::string& package_dir) {
         if (image.GetExportAddress(config_.in_process_entry) != nullptr) {
             call_st = image.CallExportedEntry(config_.in_process_entry, exit_code);
         } else {
-            set_env("SCARLETTX_REAL_TITLE", "1");
+            environment.Set("SCARLETTX_REAL_TITLE", "1");
             std::cout << "[ScarlettX][loader] Entering native PE entry point at "
                       << image.EntryPointAddress() << std::endl;
             call_st = image.CallEntryPoint(exit_code);
