@@ -8,6 +8,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <xinput.h>
 #endif
 
 #include <algorithm>
@@ -80,6 +81,10 @@ struct GameInputObject {
     GAMEINPUT_GAMEPAD_STATE injected_gamepad{};
     GAMEINPUT_GAMEPAD_STATE last_gamepad{};
     uint64_t gamepad_sequence = 1;
+#if defined(_WIN32)
+    DWORD host_gamepad_slot = XUSER_MAX_COUNT;
+    std::chrono::steady_clock::time_point next_gamepad_probe{};
+#endif
 
     uint64_t NowUs() const {
         const auto elapsed = std::chrono::steady_clock::now() - start_time;
@@ -403,27 +408,35 @@ const auto kGiReadingVtbl = BuildReadingVtable();
 //   Enter/Space = A, Escape/Backspace = B, X = X, Y = Y,
 //   Q/E = shoulders, 1/3 = triggers, Tab = View, P = Menu.
 // ---------------------------------------------------------------------------
-void ReadHostGamepad(GAMEINPUT_GAMEPAD_STATE* out) {
+void ReadHostGamepad(GameInputObject& input, GAMEINPUT_GAMEPAD_STATE* out) {
     *out = GAMEINPUT_GAMEPAD_STATE{};
 #if defined(_WIN32)
-    struct XInputPad {
-        uint16_t buttons;
-        uint8_t left_trigger, right_trigger;
-        int16_t lx, ly, rx, ry;
-    };
-    struct XInputStateBlock {
-        uint32_t packet;
-        XInputPad pad;
-    };
-    using XInputGetStateFn = DWORD (WINAPI*)(DWORD, XInputStateBlock*);
+    using XInputGetStateFn = decltype(&XInputGetState);
     static const XInputGetStateFn get_state = [] {
         const HMODULE module = LoadLibraryW(L"xinput1_4.dll");
         return module ? reinterpret_cast<XInputGetStateFn>(
                             reinterpret_cast<void*>(GetProcAddress(module, "XInputGetState")))
                       : nullptr;
     }();
-    XInputStateBlock host{};
-    if (get_state && get_state(0, &host) == 0) {
+    XINPUT_STATE host{};
+    if (get_state) {
+        if (input.host_gamepad_slot < XUSER_MAX_COUNT &&
+            get_state(input.host_gamepad_slot, &host) != ERROR_SUCCESS) {
+            input.host_gamepad_slot = XUSER_MAX_COUNT;
+            input.next_gamepad_probe = {};
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (input.host_gamepad_slot == XUSER_MAX_COUNT && now >= input.next_gamepad_probe) {
+            for (DWORD slot = 0; slot < XUSER_MAX_COUNT; ++slot) {
+                if (get_state(slot, &host) == ERROR_SUCCESS) {
+                    input.host_gamepad_slot = slot;
+                    break;
+                }
+            }
+            input.next_gamepad_probe = now + std::chrono::seconds(2);
+        }
+    }
+    if (input.host_gamepad_slot < XUSER_MAX_COUNT) {
         static const struct {
             uint16_t xinput;
             uint32_t gameinput;
@@ -437,15 +450,15 @@ void ReadHostGamepad(GAMEINPUT_GAMEPAD_STATE* out) {
             {0x4000, GAMEINPUT_GAMEPAD_X},               {0x8000, GAMEINPUT_GAMEPAD_Y},
         };
         for (const auto& b : kButtons) {
-            if (host.pad.buttons & b.xinput) out->Buttons |= b.gameinput;
+            if (host.Gamepad.wButtons & b.xinput) out->Buttons |= b.gameinput;
         }
         const auto axis = [](int16_t v) { return std::max(-1.0f, static_cast<float>(v) / 32767.0f); };
-        out->LeftTrigger = static_cast<float>(host.pad.left_trigger) / 255.0f;
-        out->RightTrigger = static_cast<float>(host.pad.right_trigger) / 255.0f;
-        out->LeftThumbstickX = axis(host.pad.lx);
-        out->LeftThumbstickY = axis(host.pad.ly);
-        out->RightThumbstickX = axis(host.pad.rx);
-        out->RightThumbstickY = axis(host.pad.ry);
+        out->LeftTrigger = static_cast<float>(host.Gamepad.bLeftTrigger) / 255.0f;
+        out->RightTrigger = static_cast<float>(host.Gamepad.bRightTrigger) / 255.0f;
+        out->LeftThumbstickX = axis(host.Gamepad.sThumbLX);
+        out->LeftThumbstickY = axis(host.Gamepad.sThumbLY);
+        out->RightThumbstickX = axis(host.Gamepad.sThumbRX);
+        out->RightThumbstickY = axis(host.Gamepad.sThumbRY);
     }
 
     DWORD focused_process = 0;
@@ -511,7 +524,7 @@ intptr_t SCARLETTX_GI_CALL GiGetCurrentReading(
         if (obj->gamepad_injected) {
             now = obj->injected_gamepad;
         } else {
-            ReadHostGamepad(&now);
+            ReadHostGamepad(*obj, &now);
         }
         if (std::memcmp(&now, &obj->last_gamepad, sizeof(now)) != 0) {
             obj->last_gamepad = now;
