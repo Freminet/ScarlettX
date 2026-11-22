@@ -195,10 +195,15 @@ int main() {
     proc_cfg.headless = true;
     proc_cfg.prefer_warp = true;
     proc_cfg.in_process = false;
-    proc_cfg.rt_dump_path = proc_frame0.string();
+    const auto launch_dir = std::filesystem::current_path();
+    const auto relative_dump = proc_frame0.lexically_relative(launch_dir);
+    const auto relative_package = pkg_dir.lexically_relative(launch_dir);
+    SX_CHECK(!relative_dump.empty() && !relative_dump.is_absolute());
+    SX_CHECK(!relative_package.empty() && !relative_package.is_absolute());
+    proc_cfg.rt_dump_path = relative_dump.string();
 
     scarlettx::Emulator emu_proc(proc_cfg);
-    auto st2 = emu_proc.BootPackage(pkg_dir.string());
+    auto st2 = emu_proc.BootPackage(relative_package.string());
     if (!st2.ok()) {
         std::cerr << "[FAIL] Child-process boot failed: " << st2.message << "\n";
     }

@@ -59,8 +59,13 @@ Status Emulator::InspectPackage(const std::string& package_dir,
 }
 
 Status Emulator::BootPackage(const std::string& package_dir) {
+    std::error_code ec;
+    const std::string abs_pkg_dir = std::filesystem::absolute(package_dir, ec).string();
+    if (ec) {
+        return Status::Error(StatusCode::IoError, "Cannot resolve package path: " + ec.message());
+    }
     PackageInspectionReport report;
-    Status st = InspectPackage(package_dir, report);
+    Status st = InspectPackage(abs_pkg_dir, report);
     if (!st.ok()) {
         return st;
     }
@@ -71,9 +76,25 @@ Status Emulator::BootPackage(const std::string& package_dir) {
     }
 
 #if defined(_WIN32)
+    const auto resolve_optional_path = [](const std::string& path, std::string& resolved) {
+        if (path.empty()) return Status::Ok();
+        std::error_code error;
+        resolved = std::filesystem::absolute(path, error).string();
+        if (error) return Status::Error(StatusCode::IoError, "Cannot resolve path " + path + ": " + error.message());
+        return Status::Ok();
+    };
+    std::string shim_dir;
+    std::string rt_dump_path;
+    std::string raster_dump_path;
+    st = resolve_optional_path(config_.shim_directory, shim_dir);
+    if (!st.ok()) return st;
+    st = resolve_optional_path(config_.rt_dump_path, rt_dump_path);
+    if (!st.ok()) return st;
+    st = resolve_optional_path(config_.raster_dump_path, raster_dump_path);
+    if (!st.ok()) return st;
+
     // Inject HLE shim directory at the front of PATH so guest imports of
     // d3d12_xs.dll, xg_xs.dll, AcpHal.dll, xgameruntime.dll, etc. resolve to ScarlettX shims.
-    std::string shim_dir = config_.shim_directory;
     if (shim_dir.empty()) {
         char exe_buf[MAX_PATH] = {};
         if (GetModuleFileNameA(nullptr, exe_buf, MAX_PATH) > 0) {
@@ -100,11 +121,9 @@ Status Emulator::BootPackage(const std::string& package_dir) {
     set_env("SCARLETTX_PREFER_WARP", config_.prefer_warp ? "1" : "0");
     set_env("SCARLETTX_TRACE", config_.trace ? "1" : "0");
     set_env("SCARLETTX_STATS", config_.stats ? "1" : "0");
-    set_env("SCARLETTX_STATS", config_.stats ? "1" : "0");
     if (!report.config.title_id.empty()) {
         set_env("SCARLETTX_TITLE_ID", report.config.title_id.c_str());
     }
-    const std::string abs_pkg_dir = std::filesystem::absolute(package_dir).string();
     set_env("SCARLETTX_PACKAGE_ROOT", abs_pkg_dir.c_str());
 
     // Real Xbox Series X|S titles (e.g. Unity Game Core nativePlugins.txt) reference G:/.
@@ -119,11 +138,11 @@ Status Emulator::BootPackage(const std::string& package_dir) {
     if (config_.max_frames > 0) {
         set_env("SCARLETTX_MAX_FRAMES", std::to_string(config_.max_frames).c_str());
     }
-    if (!config_.rt_dump_path.empty()) {
-        set_env("SCARLETTX_RT_DUMP", config_.rt_dump_path.c_str());
+    if (!rt_dump_path.empty()) {
+        set_env("SCARLETTX_RT_DUMP", rt_dump_path.c_str());
     }
-    if (!config_.raster_dump_path.empty()) {
-        set_env("SCARLETTX_RASTER_DUMP", config_.raster_dump_path.c_str());
+    if (!raster_dump_path.empty()) {
+        set_env("SCARLETTX_RASTER_DUMP", raster_dump_path.c_str());
     }
 
     if (config_.in_process) {
