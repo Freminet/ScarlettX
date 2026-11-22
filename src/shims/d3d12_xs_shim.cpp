@@ -2210,8 +2210,46 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyGetDesc(void* self, uintptr_t sret_ptr
 #if defined(_WIN32)
 constexpr UINT kMsgDestroyPresentWindow = WM_APP + 1;
 
+struct PresentWindowMode {
+    WINDOWPLACEMENT windowed_placement{};
+    bool fullscreen = false;
+};
+
+void TogglePresentFullscreen(HWND hwnd, PresentWindowMode& mode) {
+    const LONG_PTR style = GetWindowLongPtrA(hwnd, GWL_STYLE);
+    if (mode.fullscreen) {
+        SetWindowLongPtrA(hwnd, GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
+        SetWindowPlacement(hwnd, &mode.windowed_placement);
+        SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        mode.fullscreen = false;
+        return;
+    }
+
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    mode.windowed_placement.length = sizeof(mode.windowed_placement);
+    if (!GetWindowPlacement(hwnd, &mode.windowed_placement) ||
+        !GetMonitorInfoA(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        return;
+    }
+    const RECT& bounds = monitor.rcMonitor;
+    SetWindowLongPtrA(hwnd, GWL_STYLE, style & ~static_cast<LONG_PTR>(WS_OVERLAPPEDWINDOW));
+    SetWindowPos(hwnd, HWND_TOP, bounds.left, bounds.top,
+                 bounds.right - bounds.left, bounds.bottom - bounds.top,
+                 SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    mode.fullscreen = true;
+}
+
 LRESULT CALLBACK ScarlettXPresentWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_SYSKEYDOWN:
+        if (wp == VK_RETURN && (lp & (1L << 29))) {
+            auto* mode = reinterpret_cast<PresentWindowMode*>(GetWindowLongPtrA(hwnd, GWLP_USERDATA));
+            if (mode && !(lp & (1L << 30))) TogglePresentFullscreen(hwnd, *mode);
+            return 0;
+        }
+        break;
     case WM_CLOSE:
         return 0;  // the title owns the lifetime of the output
     case kMsgDestroyPresentWindow:
@@ -2258,7 +2296,9 @@ DWORD WINAPI PresentWindowThread(void* param) {
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top,
         nullptr, nullptr, wc.hInstance, nullptr);
+    PresentWindowMode mode;
     if (hwnd) {
+        SetWindowLongPtrA(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&mode));
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
     }
@@ -2487,6 +2527,13 @@ void EnsurePresentSwapChain(XboxD3D12CommandQueueProxy* obj, UINT w, UINT h, DXG
     IDXGISwapChain1* sc1 = nullptr;
     HRESULT hr = factory->CreateSwapChainForHwnd(
         obj->pc_queue, obj->present_hwnd, &sc_desc, nullptr, nullptr, &sc1);
+    if (SUCCEEDED(hr) && sc1) {
+        const HRESULT association = factory->MakeWindowAssociation(obj->present_hwnd, DXGI_MWA_NO_WINDOW_CHANGES);
+        if (FAILED(association)) {
+            std::cerr << "[ScarlettX][d3d12_xs] MakeWindowAssociation failed hr=0x"
+                      << std::hex << static_cast<uint32_t>(association) << std::dec << "\n";
+        }
+    }
     factory->Release();
     if (FAILED(hr) || !sc1) {
         std::cerr << "[ScarlettX][d3d12_xs] CreateSwapChainForHwnd failed hr=0x"
@@ -2594,7 +2641,11 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
                 if (SUCCEEDED(obj->present_list->Close())) {
                     ID3D12CommandList* lists[] = {obj->present_list};
                     obj->pc_queue->ExecuteCommandLists(1, lists);
-                    obj->swapchain->Present(0, 0);
+                    const HRESULT presented = obj->swapchain->Present(0, 0);
+                    if (FAILED(presented) && TraceEnabled()) {
+                        std::cerr << "[ScarlettX][d3d12_xs] Present failed hr=0x"
+                                  << std::hex << static_cast<uint32_t>(presented) << std::dec << "\n";
+                    }
                     const uint64_t val = ++obj->present_fence_val;
                     obj->pc_queue->Signal(obj->present_fence, val);
                 }

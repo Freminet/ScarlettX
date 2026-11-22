@@ -123,6 +123,31 @@ int main() {
     SX_REQUIRE(SendMessageTimeoutA(hwnd, WM_CLOSE, 0, 0, SMTO_ABORTIFHUNG, 10000, &result) != 0);
     SX_REQUIRE(IsWindow(hwnd));
 
+    RECT windowed{};
+    SX_REQUIRE(GetWindowRect(hwnd, &windowed));
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    SX_REQUIRE(GetMonitorInfoA(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor));
+    const auto alt_enter = [&](LPARAM flags) {
+        SX_REQUIRE(SendMessageTimeoutA(hwnd, WM_SYSKEYDOWN, VK_RETURN, flags,
+                                      SMTO_ABORTIFHUNG, 10000, &result) != 0);
+    };
+    constexpr LPARAM kAltDown = 1L << 29;
+    constexpr LPARAM kKeyRepeat = 1L << 30;
+    alt_enter(kAltDown);
+    alt_enter(kAltDown | kKeyRepeat);
+    RECT fullscreen{};
+    SX_REQUIRE(GetWindowRect(hwnd, &fullscreen));
+    SX_REQUIRE(EqualRect(&fullscreen, &monitor.rcMonitor));
+    SX_REQUIRE((GetWindowLongPtrA(hwnd, GWL_STYLE) & WS_OVERLAPPEDWINDOW) == 0);
+    SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
+    alt_enter(kAltDown);
+    RECT restored{};
+    SX_REQUIRE(GetWindowRect(hwnd, &restored));
+    SX_REQUIRE(EqualRect(&restored, &windowed));
+    SX_REQUIRE((GetWindowLongPtrA(hwnd, GWL_STYLE) & WS_OVERLAPPEDWINDOW) == WS_OVERLAPPEDWINDOW);
+    SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
+
     // Open the system menu: a modal loop inside DefWindowProc.
     PostMessageA(hwnd, WM_SYSCOMMAND, SC_KEYMENU, ' ');  // Alt+Space
     const bool modal = WaitForMenuMode(window_thread, true, 5000);
