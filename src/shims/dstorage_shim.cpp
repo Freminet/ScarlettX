@@ -345,7 +345,8 @@ int32_t SubmitQueue(const std::shared_ptr<QueueObject>& q, bool automatic) {
     {
         std::scoped_lock lock(State().mu, q->mu);
         if (q->stop) return kE_HANDLE;
-        if (automatic && (q->desc.Capacity == 0 || q->staged.size() <= q->desc.Capacity / 2)) return kS_OK;
+        if (automatic && q->desc.Capacity != 0 &&
+            q->staged.size() < (q->desc.Capacity + 1u) / 2u) return kS_OK;
         while (!q->staged.empty()) {
             q->submitted.push_back(std::move(q->staged.front()));
             q->staged.pop_front();

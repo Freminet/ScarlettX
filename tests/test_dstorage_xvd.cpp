@@ -393,17 +393,17 @@ int main() {
     SX_CHECK_EQ(err.FirstFailureHResult, invalid_arg);
     SX_CHECK_EQ(std::string(err.FailedRequestName), std::string("ReadPastEof"));
 
-    // A capacity-four queue stays staged at two entries and submits the
-    // batch when the third entry is enqueued.
+    // A capacity-four queue submits a batch at two staged entries.
     qdesc.Capacity = 4;
     uint64_t auto_queue = 0;
     SX_CHECK_EQ(DStorageCreateQueue(factory, &qdesc, &auto_queue), 0);
     std::atomic<uint64_t> auto_signal{0};
     SX_CHECK_EQ(DStorageEnqueueSignal(auto_queue, nullptr, 1, OnSignal, &auto_signal), 0);
     SX_CHECK_EQ(DStorageEnqueueSignal(auto_queue, nullptr, 2, OnSignal, &auto_signal), 0);
-    SX_CHECK_EQ(DStorageWaitForIdle(auto_queue, 0), 0);
-    SX_CHECK_EQ(auto_signal.load(), 0u);
+    SX_CHECK_EQ(DStorageWaitForIdle(auto_queue, 5000), 0);
+    SX_CHECK_EQ(auto_signal.load(), 2u);
     SX_CHECK_EQ(DStorageEnqueueStatus(auto_queue, status_arr, 3), 0);
+    SX_CHECK_EQ(DStorageSubmit(auto_queue), 0);
     SX_CHECK_EQ(DStorageWaitForIdle(auto_queue, 5000), 0);
     SX_CHECK_EQ(auto_signal.load(), 2u);
     SX_CHECK_EQ(DStorageGetStatusHResult(status_arr, 3), 0);
