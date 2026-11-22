@@ -175,6 +175,19 @@ fs::path ResolveSaveRoot(const std::string& config_id) {
     return base / SanitizeSaveName(config_id);
 }
 
+XGameResult OpenSaveBlob(const fs::path& path, std::ifstream& stream, uint32_t& size) {
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec)) return XGR_E_GS_BLOB_NOT_FOUND;
+    stream.open(path, std::ios::binary | std::ios::ate);
+    if (!stream) return XGR_E_FAIL;
+    const auto length = stream.tellg();
+    if (length < 0 || length > std::numeric_limits<uint32_t>::max()) return XGR_E_FAIL;
+    stream.seekg(0, std::ios::beg);
+    if (!stream) return XGR_E_FAIL;
+    size = static_cast<uint32_t>(length);
+    return XGR_S_OK;
+}
+
 uint64_t ComputeDirectorySize(const fs::path& dir) {
     std::error_code ec;
     if (!fs::exists(dir, ec)) {
@@ -881,17 +894,12 @@ XGameResult XGameSaveReadBlobData(
             return XGR_E_INVALIDARG;
         }
         const std::string name = blobNames[i];
-        fs::path file_path = container->dir_path / SanitizeSaveName(name);
-        std::ifstream ifs(file_path, std::ios::binary | std::ios::ate);
-        if (!ifs) {
-            return XGR_E_GS_BLOB_NOT_FOUND;
-        }
-        const std::streamsize fsize = ifs.tellg();
-        ifs.seekg(0, std::ios::beg);
-
+        std::ifstream ifs;
+        uint32_t data_len = 0;
+        const auto result = OpenSaveBlob(container->dir_path / SanitizeSaveName(name), ifs, data_len);
+        if (result != XGR_S_OK) return result;
         const size_t name_len = name.size() + 1;
-        const size_t data_len = static_cast<size_t>(fsize > 0 ? fsize : 0);
-        if (cursor + name_len + data_len > blobsSize) {
+        if (name_len > blobsSize - cursor || data_len > blobsSize - cursor - name_len) {
             return XGR_E_GS_PROVIDED_BUFFER_TOO_SMALL;
         }
 
@@ -900,13 +908,13 @@ XGameResult XGameSaveReadBlobData(
         cursor += name_len;
 
         uint8_t* data_dst = base + cursor;
-        if (data_len > 0) {
-            ifs.read(reinterpret_cast<char*>(data_dst), fsize);
+        if (data_len > 0 && !ifs.read(reinterpret_cast<char*>(data_dst), data_len)) {
+            return XGR_E_FAIL;
         }
         cursor += data_len;
 
         blobData[i].info.name = name_dst;
-        blobData[i].info.size = static_cast<uint32_t>(data_len);
+        blobData[i].info.size = data_len;
         blobData[i].data = data_dst;
         ++read_count;
     }
@@ -932,7 +940,7 @@ XGameResult XGameSaveReadBlobDataAsync(
         names.emplace_back(blobNames[i]);
     }
 
-    return BeginAsyncOperation(async, [container, names = std::move(names)](XAsyncState* st) {
+    return BeginAsyncOperation(async, [directory = container->dir_path, names = std::move(names)](XAsyncState* st) {
         std::unique_lock<std::mutex> lock(g_save_io_mutex);
 
         // Compute packed payload size: [uint32_t count] + per-blob (name_len, data_len, name, data)
@@ -942,18 +950,20 @@ XGameResult XGameSaveReadBlobDataAsync(
         blobs.reserve(names.size());
 
         for (const auto& name : names) {
-            fs::path file_path = container->dir_path / SanitizeSaveName(name);
-            std::ifstream ifs(file_path, std::ios::binary | std::ios::ate);
-            if (!ifs) {
-                lock.unlock();
-                CompleteAsyncState(st, XGR_E_GS_BLOB_NOT_FOUND, 0);
-                return;
+            std::ifstream ifs;
+            uint32_t size = 0;
+            auto result = OpenSaveBlob(directory / SanitizeSaveName(name), ifs, size);
+            std::vector<uint8_t> bytes;
+            if (result == XGR_S_OK) {
+                bytes.resize(size);
+                if (size > 0 && !ifs.read(reinterpret_cast<char*>(bytes.data()), size)) {
+                    result = XGR_E_FAIL;
+                }
             }
-            const std::streamsize fsize = ifs.tellg();
-            ifs.seekg(0, std::ios::beg);
-            std::vector<uint8_t> bytes(static_cast<size_t>(fsize > 0 ? fsize : 0));
-            if (!bytes.empty()) {
-                ifs.read(reinterpret_cast<char*>(bytes.data()), fsize);
+            if (result != XGR_S_OK) {
+                lock.unlock();
+                CompleteAsyncState(st, result, 0);
+                return;
             }
             required_gdk_size += (name.size() + 1) + bytes.size();
             blobs.emplace_back(name, std::move(bytes));

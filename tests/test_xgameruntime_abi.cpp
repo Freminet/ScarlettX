@@ -311,6 +311,22 @@ int main() {
     CHECK(async_blob_out[0].info.size == payload.size());
     CHECK(std::memcmp(async_blob_out[0].data, payload.data(), payload.size()) == 0);
 
+    XTaskQueueHandle read_queue = nullptr;
+    CHECK(XTaskQueueCreate(XTaskQueueDispatchMode_Manual, XTaskQueueDispatchMode_Manual, &read_queue) == XGR_S_OK);
+    XGameSaveContainerHandle read_container = nullptr;
+    CHECK(XGameSaveCreateContainer(provider, "slot_0", &read_container) == XGR_S_OK);
+    XAsyncBlock deferred_read{};
+    deferred_read.queue = read_queue;
+    CHECK(XGameSaveReadBlobDataAsync(read_container, read_names, 1, &deferred_read) == XGR_S_OK);
+    XGameSaveCloseContainer(read_container);
+    CHECK(XTaskQueueDispatch(read_queue, XTaskQueuePort_Work, 0));
+    async_read_count = 0;
+    CHECK(XGameSaveReadBlobDataResult(&deferred_read, async_read_buf.size(), async_blob_out, &async_read_count) ==
+          XGR_S_OK);
+    CHECK(async_read_count == 1 && async_blob_out[0].info.size == payload.size());
+    CHECK(std::memcmp(async_blob_out[0].data, payload.data(), payload.size()) == 0);
+    XTaskQueueCloseHandle(read_queue);
+
     const auto blob_dir = save_root / "00000000-0000-0000-0000-00005ca00001" / "slot_0";
     CHECK(fs::create_directory(blob_dir / "blocked.dat"));
     XGameSaveUpdateHandle failed_update = nullptr;
