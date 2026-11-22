@@ -721,9 +721,15 @@ struct XboxD3D12ResourceProxy {
 // Here it is a write-watched guest buffer that is converted to rows and
 // uploaded into the host texture whenever the title has written to it.
 struct GuestTextureMemory {
+    ID3D12Device* device = nullptr;
     void* base = nullptr;
     size_t size = 0;
     XG_RESOURCE_LAYOUT layout{};
+
+    ~GuestTextureMemory() {
+        if (base) VirtualFree(base, 0, MEM_RELEASE);
+        if (device) device->Release();
+    }
 };
 std::mutex g_guest_textures_mutex;
 std::vector<XboxD3D12ResourceProxy*> g_guest_textures;
@@ -733,9 +739,7 @@ std::atomic<uint64_t> g_upload_bytes{0};
 // True when the guest layout describes the same rows as the host texture's
 // subresources. Rules out planar formats and element sizes the layout code
 // does not know, whose conversion would not fit the host footprints.
-bool GuestLayoutMatchesHost(ID3D12Resource* res, const D3D12_RESOURCE_DESC& d, const XG_RESOURCE_LAYOUT& layout) {
-    ID3D12Device* device = nullptr;
-    if (FAILED(res->GetDevice(IID_PPV_ARGS(&device))) || !device) return false;
+bool GuestLayoutMatchesHost(ID3D12Device* device, const D3D12_RESOURCE_DESC& d, const XG_RESOURCE_LAYOUT& layout) {
     D3D12_FEATURE_DATA_FORMAT_INFO info = {};
     info.Format = d.Format;
     bool ok = SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_INFO, &info, sizeof(info))) &&
@@ -752,7 +756,6 @@ bool GuestLayoutMatchesHost(ID3D12Resource* res, const D3D12_RESOURCE_DESC& d, c
                  row_bytes[s] == static_cast<UINT64>(ml.WidthElements) * plane.BytesPerElement;
         }
     }
-    device->Release();
     return ok;
 }
 
@@ -776,7 +779,8 @@ void* EnsureGuestTextureMemory(XboxD3D12ResourceProxy* obj) {
     auto mem = std::make_unique<GuestTextureMemory>();
     scarlettx::gpu::xg::ComputeTexture2DLayout(xd, &mem->layout);
     if (!scarlettx::gpu::xg::IsAddressable(mem->layout) || mem->layout.SizeBytes == 0 ||
-        !GuestLayoutMatchesHost(obj->pc_res, d, mem->layout)) {
+        FAILED(obj->pc_res->GetDevice(IID_PPV_ARGS(&mem->device))) || !mem->device ||
+        !GuestLayoutMatchesHost(mem->device, d, mem->layout)) {
         return nullptr;
     }
     mem->size = static_cast<size_t>(mem->layout.SizeBytes);
@@ -799,7 +803,6 @@ void ReleaseGuestTextureMemory(XboxD3D12ResourceProxy* obj) {
     if (!obj->guest_memory) return;
     g_guest_textures.erase(std::remove(g_guest_textures.begin(), g_guest_textures.end(), obj),
                            g_guest_textures.end());
-    VirtualFree(obj->guest_memory->base, 0, MEM_RELEASE);
     delete obj->guest_memory;
     obj->guest_memory = nullptr;
 }
@@ -898,11 +901,9 @@ struct GuestTextureUpload {
 // Uploads all dirty textures in one command list and one fence wait. The
 // per-texture version used to allocate, submit and block once per texture,
 // which turned a handful of streamed textures into a long CPU stall.
-void UploadGuestTextureBatch(ID3D12CommandQueue* queue,
+void UploadGuestTextureBatch(ID3D12CommandQueue* queue, ID3D12Device* device,
                              std::vector<GuestTextureUpload>& uploads) {
     if (uploads.empty()) return;
-    ID3D12Device* device = nullptr;
-    if (FAILED(uploads.front().tex->pc_res->GetDevice(IID_PPV_ARGS(&device))) || !device) return;
 
     uint64_t total = 0;
     for (GuestTextureUpload& u : uploads) {
@@ -915,7 +916,6 @@ void UploadGuestTextureBatch(ID3D12CommandQueue* queue,
         total = u.offset + u.size;
     }
     if (total == 0) {
-        device->Release();
         return;
     }
     g_upload_bytes.fetch_add(total, std::memory_order_relaxed);
@@ -998,11 +998,10 @@ void UploadGuestTextureBatch(ID3D12CommandQueue* queue,
     if (list) list->Release();
     if (alloc) alloc->Release();
     if (upload) upload->Release();
-    device->Release();
 }
 
-// Uploads every guest-memory texture the title has written to since the last call.
-void FlushGuestTextureWrites(ID3D12CommandQueue* queue) {
+// Uploads dirty guest textures owned by the submitting queue's device.
+void FlushGuestTextureWrites(ID3D12CommandQueue* queue, ID3D12Device* device) {
     std::lock_guard<std::mutex> lock(g_guest_textures_mutex);
     if (g_guest_textures.empty()) return;
     std::vector<GuestTextureUpload> uploads;
@@ -1010,6 +1009,7 @@ void FlushGuestTextureWrites(ID3D12CommandQueue* queue) {
     std::vector<UINT> dirty;
     for (XboxD3D12ResourceProxy* tex : g_guest_textures) {
         GuestTextureMemory& mem = *tex->guest_memory;
+        if (mem.device != device) continue;
         pages.resize(mem.size / 4096 + 1);
         ULONG_PTR count = pages.size();
         DWORD granularity = 0;
@@ -1041,7 +1041,7 @@ void FlushGuestTextureWrites(ID3D12CommandQueue* queue) {
         u.dirty = dirty;
         uploads.push_back(std::move(u));
     }
-    UploadGuestTextureBatch(queue, uploads);
+    UploadGuestTextureBatch(queue, device, uploads);
     if (TraceEnabled() && !uploads.empty()) {
         std::cerr << "[ScarlettX][d3d12_xs] uploaded " << uploads.size()
                   << " guest texture(s) in one batch\n";
@@ -2132,7 +2132,7 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyExecuteCommandLists(
             LARGE_INTEGER freq{}, start{}, end{};
             QueryPerformanceFrequency(&freq);
             QueryPerformanceCounter(&start);
-            FlushGuestTextureWrites(obj->pc_queue);
+            FlushGuestTextureWrites(obj->pc_queue, obj->pc_device);
             QueryPerformanceCounter(&end);
             g_flush_us.fetch_add(static_cast<uint64_t>(
                                      (end.QuadPart - start.QuadPart) * 1000000ll / freq.QuadPart),

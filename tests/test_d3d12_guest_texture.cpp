@@ -141,16 +141,10 @@ void ReadBackAndCompare(Context& c, const std::vector<Mip>& mips, bool first_pas
     Call(c.readback, kResUnmap, uintptr_t{0}, static_cast<void*>(nullptr));
 }
 
-}  // namespace
-
-int main() {
-    // Select the guest-facing proxies (also set by CTest for this test).
-    _putenv_s("SCARLETTX_REAL_TITLE", "1");
-
-    Context c;
+void InitializeContext(Context& c, bool prefer_warp) {
     D3D12XBOX_CREATE_DEVICE_PARAMETERS params{};
     params.Version = 1;
-    params.PreferWarp = 1;
+    params.PreferWarp = prefer_warp ? 1 : 0;
     const IID device_iid = __uuidof(ID3D12Device);
     SX_REQUIRE(D3D12XboxCreateDevice(nullptr, &params, &device_iid, &c.device) >= 0);
     SX_REQUIRE(c.device != nullptr);
@@ -165,6 +159,19 @@ int main() {
     SX_REQUIRE(Call(c.device, kDevCreateFence, uintptr_t{0}, uintptr_t{0}, static_cast<void*>(nullptr),
                     &c.fence) == 0);
     SX_REQUIRE(c.queue && c.allocator && c.list && c.fence);
+}
+
+}  // namespace
+
+int main() {
+    // Select the guest-facing proxies (also set by CTest for this test).
+    _putenv_s("SCARLETTX_REAL_TITLE", "1");
+
+    const bool multi_adapter = std::getenv("SCARLETTX_TEST_MULTI_ADAPTER") != nullptr;
+    if (multi_adapter) _putenv_s("SCARLETTX_PREFER_WARP", "1");
+
+    Context c;
+    InitializeContext(c, true);
 
     D3D12_RESOURCE_DESC td = {};
     td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -213,6 +220,25 @@ int main() {
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     c.readback = CreateResource(c.device, D3D12_HEAP_TYPE_READBACK, bd, D3D12_RESOURCE_STATE_COPY_DEST);
 
+    Context other;
+    std::vector<Mip> other_mips;
+    if (multi_adapter) {
+        _putenv_s("SCARLETTX_PREFER_WARP", "0");
+        InitializeContext(other, false);
+        other.texture = CreateResource(other.device, D3D12_HEAP_TYPE_DEFAULT, td,
+                                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        other.readback = CreateResource(other.device, D3D12_HEAP_TYPE_READBACK, bd,
+                                        D3D12_RESOURCE_STATE_COPY_DEST);
+        auto* address = reinterpret_cast<uint8_t*>(Call(other.texture, kResGetGPUVirtualAddress));
+        SX_REQUIRE(address != nullptr);
+        other_mips = mips;
+        Fill(other_mips, 89);
+        for (uint32_t m = 0; m < kMips; ++m) {
+            SX_REQUIRE(xg::CopyIntoSubresource(*layout, address, m, 0, other_mips[m].pixels.data(),
+                                             other_mips[m].width * 4));
+        }
+    }
+
     // Write the cooked data the way a title does, then use the texture.
     for (int pass = 0; pass < 2; ++pass) {
         Fill(mips, static_cast<uint8_t>(pass == 0 ? 3 : 171));
@@ -221,6 +247,8 @@ int main() {
         }
         ReadBackAndCompare(c, mips, pass == 0);
     }
+
+    if (multi_adapter) ReadBackAndCompare(other, other_mips, true);
 
     // Mip 1 arrives through a command-list copy, then mip 0 through guest
     // memory: the upload of mip 0 must leave the copied mip alone.
