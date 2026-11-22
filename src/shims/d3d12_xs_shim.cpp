@@ -895,8 +895,6 @@ struct GuestTextureUpload {
     std::vector<UINT> dirty;
     D3D12_RESOURCE_DESC desc{};
     std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> fps;
-    uint64_t offset = 0;
-    uint64_t size = 0;
 };
 
 // Uploads all dirty textures in one command list and one fence wait. The
@@ -909,12 +907,21 @@ bool UploadGuestTextureBatch(ID3D12CommandQueue* queue, ID3D12Device* device,
     uint64_t total = 0;
     for (GuestTextureUpload& u : uploads) {
         u.desc = u.tex->pc_res->GetDesc();
-        const UINT subresources = static_cast<UINT>(u.desc.MipLevels) * u.desc.DepthOrArraySize;
-        u.fps.resize(subresources);
-        u.offset = AlignUp(total, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
-        device->GetCopyableFootprints(&u.desc, 0, subresources, 0, u.fps.data(), nullptr, nullptr,
-                                      &u.size);
-        total = u.offset + u.size;
+        u.fps.resize(u.dirty.size());
+        // Pack consecutive dirty subresources together while leaving clean
+        // mips and array slices out of the upload allocation.
+        for (size_t first = 0; first < u.dirty.size();) {
+            size_t end = first + 1;
+            while (end < u.dirty.size() && u.dirty[end] == u.dirty[end - 1] + 1) ++end;
+            const uint64_t base = AlignUp(total, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+            uint64_t bytes = 0;
+            device->GetCopyableFootprints(&u.desc, u.dirty[first], static_cast<UINT>(end - first), 0,
+                                          u.fps.data() + first, nullptr, nullptr, &bytes);
+            if (base < total || bytes == 0 || bytes >= UINT64_MAX - base) return false;
+            for (size_t i = first; i < end; ++i) u.fps[i].Offset += base;
+            total = base + bytes;
+            first = end;
+        }
     }
     if (total == 0) {
         return false;
@@ -951,11 +958,12 @@ bool UploadGuestTextureBatch(ID3D12CommandQueue* queue, ID3D12Device* device,
     if (ready) {
         for (const GuestTextureUpload& u : uploads) {
             const GuestTextureMemory& mem = *u.tex->guest_memory;
-            for (const UINT s : u.dirty) {
+            for (size_t i = 0; i < u.dirty.size(); ++i) {
+                const UINT s = u.dirty[i];
+                const auto& footprint = u.fps[i];
                 scarlettx::gpu::xg::CopyFromSubresource(
                     mem.layout, mem.base, s % u.desc.MipLevels, s / u.desc.MipLevels,
-                    static_cast<uint8_t*>(mapped) + u.offset + u.fps[s].Offset,
-                    u.fps[s].Footprint.RowPitch);
+                    static_cast<uint8_t*>(mapped) + footprint.Offset, footprint.Footprint.RowPitch);
             }
         }
         upload->Unmap(0, nullptr);
@@ -970,17 +978,15 @@ bool UploadGuestTextureBatch(ID3D12CommandQueue* queue, ID3D12Device* device,
             b.Transition.StateBefore = state;
             b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
             if (state != D3D12_RESOURCE_STATE_COPY_DEST) list->ResourceBarrier(1, &b);
-            for (const UINT s : u.dirty) {
-                D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = u.fps[s];
-                fp.Offset += u.offset;
+            for (size_t i = 0; i < u.dirty.size(); ++i) {
                 D3D12_TEXTURE_COPY_LOCATION dst = {};
                 dst.pResource = u.tex->pc_res;
                 dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                dst.SubresourceIndex = s;
+                dst.SubresourceIndex = u.dirty[i];
                 D3D12_TEXTURE_COPY_LOCATION src = {};
                 src.pResource = upload;
                 src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-                src.PlacedFootprint = fp;
+                src.PlacedFootprint = u.fps[i];
                 list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
             }
             std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
@@ -1003,6 +1009,10 @@ bool UploadGuestTextureBatch(ID3D12CommandQueue* queue, ID3D12Device* device,
     if (completed) {
         g_upload_bytes.fetch_add(total, std::memory_order_relaxed);
         g_upload_textures.fetch_add(uploads.size(), std::memory_order_relaxed);
+        if (TraceEnabled()) {
+            std::cerr << "[ScarlettX][d3d12_xs] uploaded " << uploads.size()
+                      << " guest texture(s) using " << total << " staging bytes\n";
+        }
     }
     return completed;
 }
@@ -1051,10 +1061,6 @@ void FlushGuestTextureWrites(ID3D12CommandQueue* queue, ID3D12Device* device) {
     }
     if (!UploadGuestTextureBatch(queue, device, uploads)) return;
     for (const auto& upload : uploads) upload.tex->guest_memory->pending_mips.clear();
-    if (TraceEnabled() && !uploads.empty()) {
-        std::cerr << "[ScarlettX][d3d12_xs] uploaded " << uploads.size()
-                  << " guest texture(s) in one batch\n";
-    }
 }
 #endif
 intptr_t SCARLETTX_GDK_CALLBACK ResProxyQueryInterface(void* self, uintptr_t, uintptr_t ppv, uintptr_t) {

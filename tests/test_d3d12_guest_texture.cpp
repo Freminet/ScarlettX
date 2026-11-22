@@ -250,8 +250,8 @@ int main() {
 
     if (multi_adapter) ReadBackAndCompare(other, other_mips, true);
 
-    // Mip 1 arrives through a command-list copy, then mip 0 through guest
-    // memory: the upload of mip 0 must leave the copied mip alone.
+    // Mip 1 arrives through a command-list copy. Disjoint writes to mip 0
+    // and the mip tail must leave the copied mip alone.
     {
         D3D12_RESOURCE_DESC ud = bd;
         ud.Width = static_cast<uint64_t>(mips[1].pitch) * mips[1].height;
@@ -295,6 +295,9 @@ int main() {
 
         for (size_t i = 0; i < mips[0].pixels.size(); ++i) mips[0].pixels[i] = static_cast<uint8_t>(i * 3 + 9);
         SX_REQUIRE(xg::CopyIntoSubresource(*layout, memory, 0, 0, mips[0].pixels.data(), mips[0].width * 4));
+        Mip& tail = mips.back();
+        tail.pixels[0] ^= 0xFF;
+        SX_REQUIRE(xg::CopyIntoSubresource(*layout, memory, kMips - 1, 0, tail.pixels.data(), tail.width * 4));
         ReadBackAndCompare(c, mips, false);
     }
 
