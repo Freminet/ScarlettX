@@ -725,6 +725,7 @@ struct GuestTextureMemory {
     void* base = nullptr;
     size_t size = 0;
     XG_RESOURCE_LAYOUT layout{};
+    std::vector<UINT> pending_mips;
 
     ~GuestTextureMemory() {
         if (base) VirtualFree(base, 0, MEM_RELEASE);
@@ -901,9 +902,9 @@ struct GuestTextureUpload {
 // Uploads all dirty textures in one command list and one fence wait. The
 // per-texture version used to allocate, submit and block once per texture,
 // which turned a handful of streamed textures into a long CPU stall.
-void UploadGuestTextureBatch(ID3D12CommandQueue* queue, ID3D12Device* device,
+bool UploadGuestTextureBatch(ID3D12CommandQueue* queue, ID3D12Device* device,
                              std::vector<GuestTextureUpload>& uploads) {
-    if (uploads.empty()) return;
+    if (uploads.empty()) return true;
 
     uint64_t total = 0;
     for (GuestTextureUpload& u : uploads) {
@@ -916,10 +917,8 @@ void UploadGuestTextureBatch(ID3D12CommandQueue* queue, ID3D12Device* device,
         total = u.offset + u.size;
     }
     if (total == 0) {
-        return;
+        return false;
     }
-    g_upload_bytes.fetch_add(total, std::memory_order_relaxed);
-    g_upload_textures.fetch_add(uploads.size(), std::memory_order_relaxed);
 
     D3D12_HEAP_PROPERTIES hp = {};
     hp.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -948,6 +947,7 @@ void UploadGuestTextureBatch(ID3D12CommandQueue* queue, ID3D12Device* device,
         SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))) &&
         SUCCEEDED(upload->Map(0, nullptr, &mapped));
 
+    bool completed = false;
     if (ready) {
         for (const GuestTextureUpload& u : uploads) {
             const GuestTextureMemory& mem = *u.tex->guest_memory;
@@ -990,7 +990,9 @@ void UploadGuestTextureBatch(ID3D12CommandQueue* queue, ID3D12Device* device,
         if (SUCCEEDED(list->Close())) {
             ID3D12CommandList* lists[] = {list};
             queue->ExecuteCommandLists(1, lists);
-            if (SUCCEEDED(queue->Signal(fence, 1))) fence->SetEventOnCompletion(1, nullptr);
+            completed = SUCCEEDED(queue->Signal(fence, 1)) &&
+                        SUCCEEDED(fence->SetEventOnCompletion(1, nullptr)) &&
+                        SUCCEEDED(device->GetDeviceRemovedReason());
         }
     }
 
@@ -998,6 +1000,11 @@ void UploadGuestTextureBatch(ID3D12CommandQueue* queue, ID3D12Device* device,
     if (list) list->Release();
     if (alloc) alloc->Release();
     if (upload) upload->Release();
+    if (completed) {
+        g_upload_bytes.fetch_add(total, std::memory_order_relaxed);
+        g_upload_textures.fetch_add(uploads.size(), std::memory_order_relaxed);
+    }
+    return completed;
 }
 
 // Uploads dirty guest textures owned by the submitting queue's device.
@@ -1006,7 +1013,6 @@ void FlushGuestTextureWrites(ID3D12CommandQueue* queue, ID3D12Device* device) {
     if (g_guest_textures.empty()) return;
     std::vector<GuestTextureUpload> uploads;
     std::vector<void*> pages;
-    std::vector<UINT> dirty;
     for (XboxD3D12ResourceProxy* tex : g_guest_textures) {
         GuestTextureMemory& mem = *tex->guest_memory;
         if (mem.device != device) continue;
@@ -1014,16 +1020,16 @@ void FlushGuestTextureWrites(ID3D12CommandQueue* queue, ID3D12Device* device) {
         ULONG_PTR count = pages.size();
         DWORD granularity = 0;
         // Reading resets the watch: a write that lands during the copy is picked up next time.
-        if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, mem.base, mem.size, pages.data(), &count, &granularity) != 0 ||
-            count == 0) {
-            continue;
+        if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, mem.base, mem.size, pages.data(), &count, &granularity) != 0) {
+            count = 0;
         }
         pages.resize(count);
         // Only the subresources the title wrote to: the others may hold data
         // that arrived through command-list copies.
         const D3D12_RESOURCE_DESC d = tex->pc_res->GetDesc();
-        dirty.clear();
-        for (UINT s = 0; s < static_cast<UINT>(d.MipLevels) * d.DepthOrArraySize; ++s) {
+        auto& dirty = mem.pending_mips;
+        const UINT subresources = static_cast<UINT>(d.MipLevels) * d.DepthOrArraySize;
+        for (UINT s = 0; count != 0 && s < subresources; ++s) {
             uint64_t offset = 0, size = 0;
             if (!scarlettx::gpu::xg::SubresourceRange(mem.layout, s % d.MipLevels, s / d.MipLevels, &offset, &size)) {
                 continue;
@@ -1036,12 +1042,15 @@ void FlushGuestTextureWrites(ID3D12CommandQueue* queue, ID3D12Device* device) {
             if (written) dirty.push_back(s);
         }
         if (dirty.empty()) continue;
+        std::sort(dirty.begin(), dirty.end());
+        dirty.erase(std::unique(dirty.begin(), dirty.end()), dirty.end());
         GuestTextureUpload u;
         u.tex = tex;
         u.dirty = dirty;
         uploads.push_back(std::move(u));
     }
-    UploadGuestTextureBatch(queue, device, uploads);
+    if (!UploadGuestTextureBatch(queue, device, uploads)) return;
+    for (const auto& upload : uploads) upload.tex->guest_memory->pending_mips.clear();
     if (TraceEnabled() && !uploads.empty()) {
         std::cerr << "[ScarlettX][d3d12_xs] uploaded " << uploads.size()
                   << " guest texture(s) in one batch\n";
