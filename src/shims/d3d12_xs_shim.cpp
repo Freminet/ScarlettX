@@ -2430,8 +2430,8 @@ void DumpResourceToBmp(
     const std::string& path) {
     if (!obj || !obj->pc_device || !obj->pc_queue || !obj->present_alloc || !obj->present_list || !src_res) return;
     D3D12_RESOURCE_DESC desc = src_res->GetDesc();
-    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Height == 0 ||
-        desc.SampleDesc.Count != 1) return;
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Height == 0) return;
+    const bool multisampled = desc.SampleDesc.Count > 1;
     if (desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS) desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     else if (desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS) desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     const bool is_bgra = desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
@@ -2441,6 +2441,23 @@ void DumpResourceToBmp(
     const bool is_rgb10 = desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM;
     const bool is_float16 = desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
     if (!is_bgra && !is_rgba && !is_rgb10 && !is_float16) return;
+
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.SampleDesc = {1, 0};
+    desc.Alignment = 0;
+    desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    const auto release_resource = [](ID3D12Resource* resource) { resource->Release(); };
+    std::unique_ptr<ID3D12Resource, decltype(release_resource)> resolved(nullptr, release_resource);
+    if (multisampled) {
+        D3D12_HEAP_PROPERTIES heap{};
+        heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        ID3D12Resource* texture = nullptr;
+        if (FAILED(obj->pc_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                    D3D12_RESOURCE_STATE_RESOLVE_DEST, nullptr, IID_PPV_ARGS(&texture)))) return;
+        resolved.reset(texture);
+    }
 
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = {};
     UINT num_rows = 0;
@@ -2473,14 +2490,19 @@ void DumpResourceToBmp(
         return;
     }
 
-    if (cur_state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
-        D3D12_RESOURCE_BARRIER b = {};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = src_res;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        b.Transition.StateBefore = cur_state;
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-        obj->present_list->ResourceBarrier(1, &b);
+    const auto transition = [&](ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
+                                D3D12_RESOURCE_STATES after) {
+        if (before == after) return;
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition = {resource, 0, before, after};
+        obj->present_list->ResourceBarrier(1, &barrier);
+    };
+    const auto source_state = multisampled ? D3D12_RESOURCE_STATE_RESOLVE_SOURCE : D3D12_RESOURCE_STATE_COPY_SOURCE;
+    transition(src_res, cur_state, source_state);
+    if (multisampled) {
+        obj->present_list->ResolveSubresource(resolved.get(), 0, src_res, 0, desc.Format);
+        transition(resolved.get(), D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
     }
 
     D3D12_TEXTURE_COPY_LOCATION dst_loc = {};
@@ -2488,29 +2510,22 @@ void DumpResourceToBmp(
     dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     dst_loc.PlacedFootprint = fp;
     D3D12_TEXTURE_COPY_LOCATION src_loc = {};
-    src_loc.pResource = src_res;
+    src_loc.pResource = multisampled ? resolved.get() : src_res;
     src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     src_loc.SubresourceIndex = 0;
     obj->present_list->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
 
-    if (cur_state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
-        D3D12_RESOURCE_BARRIER b = {};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = src_res;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-        b.Transition.StateAfter = cur_state;
-        obj->present_list->ResourceBarrier(1, &b);
-    }
+    transition(src_res, source_state, cur_state);
 
     if (SUCCEEDED(obj->present_list->Close())) {
         ID3D12CommandList* lists[] = {obj->present_list};
         obj->pc_queue->ExecuteCommandLists(1, lists);
         const uint64_t val = ++obj->present_fence_val;
-        obj->pc_queue->Signal(obj->present_fence, val);
-        if (obj->present_fence->GetCompletedValue() < val) {
-            obj->present_fence->SetEventOnCompletion(val, obj->present_event);
-            WaitForSingleObject(obj->present_event, 5000);
+        if (FAILED(obj->pc_queue->Signal(obj->present_fence, val)) ||
+            FAILED(obj->present_fence->SetEventOnCompletion(val, nullptr)) ||
+            FAILED(obj->pc_device->GetDeviceRemovedReason())) {
+            rb->Release();
+            return;
         }
 
         void* mapped = nullptr;

@@ -126,7 +126,7 @@ int main(int argc, char** argv) {
         SX_REQUIRE(FindPresentWindow() == nullptr);
         const std::string prefix = "headless-present-" + std::to_string(GetCurrentProcessId());
         _putenv_s("SCARLETTX_DUMP_FRAME", prefix.c_str());
-        _putenv_s("SCARLETTX_DUMP_FRAME_AT", "2,3,4");
+        _putenv_s("SCARLETTX_DUMP_FRAME_AT", "2,3,4,5");
         SX_REQUIRE(Call(queue, kQueuePresentX, uintptr_t{1}, plane, static_cast<void*>(nullptr)) == 0);
         SX_REQUIRE(FindPresentWindow() == nullptr);
         const auto path = prefix + "_2.bmp";
@@ -145,8 +145,10 @@ int main(int argc, char** argv) {
         const auto rtv = static_cast<uintptr_t>(Call(heap, kHeapGetCpuStart));
         SX_REQUIRE(rtv != 0);
         int frame_number = 2;
-        for (const auto format : {DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT}) {
+        for (const auto format : {DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                                  DXGI_FORMAT_R8G8B8A8_UNORM}) {
             td.Format = format;
+            td.SampleDesc.Count = format == DXGI_FORMAT_R8G8B8A8_UNORM ? 4 : 1;
             void* color_frame = nullptr;
             SX_REQUIRE(Call(device, kDevCreateCommittedResource, &hp, uintptr_t{0}, &td,
                             uintptr_t{D3D12_RESOURCE_STATE_RENDER_TARGET}, nullptr, nullptr, &color_frame) == 0);
