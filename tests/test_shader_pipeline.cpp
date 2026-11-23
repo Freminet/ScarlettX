@@ -9,6 +9,7 @@
         }                                                                       \
     } while (0)
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -49,6 +50,32 @@ std::vector<uint8_t> BuildSyntheticDxbc(
         AppendLe32(out, static_cast<uint32_t>(c.second.size()));
         out.insert(out.end(), c.second.begin(), c.second.end());
     }
+    return out;
+}
+
+// Returns a copy of a compiled DXBC container with one more chunk at the end, the way an
+// Xbox build carries its private chunks. The checksum field is cleared, so the stripped
+// output can only carry a valid one if the translator computes it.
+std::vector<uint8_t> AppendDxbcChunk(
+    const std::vector<uint8_t>& dxbc, const char* fourcc, const std::vector<uint8_t>& payload) {
+    uint32_t n = 0;
+    std::memcpy(&n, dxbc.data() + 28, 4);
+    std::vector<uint8_t> out(dxbc.begin(), dxbc.begin() + 32);
+    std::fill(out.begin() + 4, out.begin() + 20, uint8_t{0});
+    const uint32_t total = static_cast<uint32_t>(dxbc.size() + 4 + 8 + payload.size());
+    std::memcpy(out.data() + 24, &total, 4);
+    const uint32_t new_count = n + 1;
+    std::memcpy(out.data() + 28, &new_count, 4);
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t off = 0;
+        std::memcpy(&off, dxbc.data() + 32 + i * 4, 4);
+        AppendLe32(out, off + 4);
+    }
+    AppendLe32(out, static_cast<uint32_t>(dxbc.size() + 4));
+    out.insert(out.end(), dxbc.begin() + 32 + n * 4, dxbc.end());
+    out.insert(out.end(), fourcc, fourcc + 4);
+    AppendLe32(out, static_cast<uint32_t>(payload.size()));
+    out.insert(out.end(), payload.begin(), payload.end());
     return out;
 }
 
@@ -200,6 +227,32 @@ int main() {
     SX_CHECK(D3D12XboxCreateGraphicsPipelineState(dev, &gfx_pso_desc, &gfx_pso2) == 0);
     SX_CHECK(gfx_pso1 != 0 && gfx_pso2 != 0 && gfx_pso1 != gfx_pso2);
 
+    // Stripping an Xbox chunk from compiled DXBC must give back the fxc container byte for
+    // byte, checksum included; D3D12 rejects a container whose checksum does not match.
+    // The last shader is there for its size: its hashed tail ends 56+ bytes into a block,
+    // which takes the other padding path.
+    std::vector<uint8_t> vs_id_dxbc;
+    SX_CHECK(CompileHlslToDxbc(
+                 "float4 main(uint v : SV_VertexID) : SV_POSITION { return float4(v, 0, 0, 1); }",
+                 "main", "vs_5_0", vs_id_dxbc)
+                 .ok());
+    for (const auto* compiled : {&vs_dxbc, &ps_dxbc, &cs_dxbc, &vs_id_dxbc}) {
+        const auto with_xbox = AppendDxbcChunk(*compiled, "XBOX", {0xAA, 0xBB, 0xCC, 0xDD});
+        ShaderTranslationResult stripped{};
+        SX_CHECK(TranslateXboxShaderToPc(with_xbox, stripped).ok());
+        SX_CHECK(stripped.stripped_xbox_chunks == 1);
+        SX_CHECK(stripped.pc_bytecode == *compiled);
+    }
+    const auto vs_xbox = AppendDxbcChunk(vs_dxbc, "XBOX", {0xAA, 0xBB, 0xCC, 0xDD});
+    const auto ps_xbox = AppendDxbcChunk(ps_dxbc, "XS2M", {0x11, 0x22, 0x33, 0x44});
+    D3D12XBOX_GRAPHICS_PSO_DESC xbox_pso_desc = gfx_pso_desc;
+    xbox_pso_desc.VS = {vs_xbox.data(), vs_xbox.size()};
+    xbox_pso_desc.PS = {ps_xbox.data(), ps_xbox.size()};
+    xbox_pso_desc.RtvFormat = 87;  // DXGI_FORMAT_B8G8R8A8_UNORM, so the PSO is not a cache hit
+    uint64_t xbox_pso = 0;
+    SX_CHECK(D3D12XboxCreateGraphicsPipelineState(dev, &xbox_pso_desc, &xbox_pso) == 0);
+    SX_CHECK(xbox_pso != 0);
+
     // Render using the custom Graphics PSO and verify deterministic pixel hash
     const std::string ppm_path = std::string(SCARLETTX_BINARY_DIR) + "/shader_pso_frame.ppm";
     uint64_t hash1 = 0, hash2 = 0;
@@ -244,19 +297,20 @@ int main() {
     SX_CHECK(D3D12XboxCreateRaytracingPipelineState(dev, &rt_pso_desc, &rt_pso) == 0);
     SX_CHECK(rt_pso != 0);
 
-    // Check pipeline cache stats (1 graphics hit + 3 misses: 1 gfx + 1 cs + 1 rt)
+    // Check pipeline cache stats (1 graphics hit + 4 misses: 2 gfx + 1 cs + 1 rt)
     D3D12XBOX_PIPELINE_CACHE_STATS stats{};
     SX_CHECK(D3D12XboxGetPipelineCacheStats(dev, &stats) == 0);
     SX_CHECK(stats.CacheHits == 1);
-    SX_CHECK(stats.CacheMisses == 3);
+    SX_CHECK(stats.CacheMisses == 4);
     SX_CHECK(stats.LiveRootSignatures == 2);
     SX_CHECK(stats.LiveDescriptorHeaps == 1);
-    SX_CHECK(stats.LiveGraphicsPsos == 2);
+    SX_CHECK(stats.LiveGraphicsPsos == 3);
     SX_CHECK(stats.LiveComputePsos == 1);
     SX_CHECK(stats.LiveRaytracingPsos == 1);
 
     SX_CHECK(D3D12XboxDestroyPipelineState(dev, gfx_pso1) == 0);
     SX_CHECK(D3D12XboxDestroyPipelineState(dev, gfx_pso2) == 0);
+    SX_CHECK(D3D12XboxDestroyPipelineState(dev, xbox_pso) == 0);
     SX_CHECK(D3D12XboxDestroyPipelineState(dev, cs_pso) == 0);
     SX_CHECK(D3D12XboxDestroyPipelineState(dev, rt_pso) == 0);
     SX_CHECK(D3D12XboxDestroyDescriptorHeap(dev, cbv_heap) == 0);
