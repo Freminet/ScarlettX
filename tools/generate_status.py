@@ -226,6 +226,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
     )
 
     shader_ir_ready = 1 if (ROOT / "src/gpu/shader_ir.cpp").exists() else 0
+    rdna2_ready = 8 if (ROOT / "src/gpu/rdna2_xs2.cpp").exists() else 0
 
     subsystems = [
         Subsystem(
@@ -365,9 +366,12 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             name="RDNA2 XS2 Shader Lifting",
             short_name="XS2",
             category="Graphics",
-            implemented=0,
+            implemented=rdna2_ready,
             target=16,
-            notes="Precompiled RDNA2/Scarlett GPU microcode lifting to PC DXIL or SPIR-V",
+            notes=(
+                "XS2 container parser, GFX10.3 SOP/VOP/SMEM/MUBUF/FLAT/EXP decoder & disassembler, "
+                "CFG reconstruction, and Compute/Vertex/Pixel HLSL-to-DXBC lifter executed on D3D12"
+            ),
         ),
         Subsystem(
             name="Retail XVC/XVD Crypto",

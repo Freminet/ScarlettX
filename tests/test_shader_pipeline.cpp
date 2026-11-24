@@ -1,4 +1,5 @@
 #include "scarlettx/gpu/d3d12_xs_abi.h"
+#include "scarlettx/gpu/rdna2_xs2.h"
 #include "scarlettx/gpu/shader_ir.h"
 #define SX_CHECK(cond)                                                          \
     do {                                                                        \
@@ -96,16 +97,35 @@ int main() {
         SX_CHECK(pc_info.has_embedded_root_signature);
     }
 
-    // 2. Scarlett precompiled RDNA2 ISA container detection
+    // 2. Scarlett precompiled RDNA2 XS2 container inspection & lifting
     {
-        std::vector<uint8_t> rdna2 = {'X', 'S', '2', '\0', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        std::vector<uint8_t> truncated_rdna2 = {'X', 'S', '2', '\0', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
         ShaderModuleInfo info{};
-        SX_CHECK(InspectShaderContainer(rdna2, info).ok());
+        SX_CHECK(InspectShaderContainer(truncated_rdna2, info).ok());
         SX_CHECK(info.kind == ShaderContainerKind::ScarlettRdna2);
         ShaderTranslationResult tr{};
-        Status st = TranslateXboxShaderToPc(rdna2, tr);
+        Status st = TranslateXboxShaderToPc(truncated_rdna2, tr);
         SX_CHECK(!st.ok());
-        SX_CHECK(st.code == StatusCode::UnsupportedFormat);
+        SX_CHECK(st.code == StatusCode::ShaderError);
+
+        gpu::Xs2Header hdr{};
+        hdr.stage = gpu::Xs2Stage::Compute;
+        hdr.wave_mode = gpu::Xs2WaveMode::Wave32;
+        hdr.sgpr_count = 4;
+        hdr.vgpr_count = 4;
+        hdr.num_threads_x = 16;
+        std::vector<uint32_t> code = {
+            gpu::enc::Vop1(0x01, 1, 242),
+            gpu::enc::Sopp(0x01, 0),
+        };
+        auto valid_rdna2 = gpu::BuildXs2Container(hdr, {}, code);
+        SX_CHECK(InspectShaderContainer(valid_rdna2, info).ok());
+        SX_CHECK(info.kind == ShaderContainerKind::ScarlettRdna2);
+        SX_CHECK(info.stage == ShaderStage::Compute);
+        SX_CHECK(!info.disassembly_summary.empty());
+        SX_CHECK(TranslateXboxShaderToPc(valid_rdna2, tr).ok());
+        SX_CHECK(!tr.pc_bytecode.empty());
+        SX_CHECK(!tr.lifted_hlsl.empty());
     }
 
     // 3. ShaderCache hit/miss tracking

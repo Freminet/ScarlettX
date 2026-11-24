@@ -42,6 +42,7 @@ struct ShaderModuleInfo {
     bool has_embedded_root_signature = false;
     bool has_xbox_private_chunks = false;
     std::vector<std::string> chunk_fourccs;
+    std::string disassembly_summary;
 };
 
 struct ShaderTranslationResult {
@@ -49,16 +50,16 @@ struct ShaderTranslationResult {
     std::vector<uint8_t> pc_bytecode;
     uint64_t translated_hash = 0;
     uint32_t stripped_xbox_chunks = 0;
+    std::string lifted_hlsl;
 };
 
 uint64_t HashShaderBytes(const uint8_t* data, size_t size);
 
 Status InspectShaderContainer(const std::vector<uint8_t>& bytecode, ShaderModuleInfo& out_info);
 
-// Translates a Scarlett/Xbox DXBC or DXIL container into a PC-compatible DXBC/DXIL
-// container by stripping Xbox-private chunks (XBOX, XS2M, XDBG) and rebuilding the
-// DXBC chunk offset table. For precompiled RDNA2 (XS2\0) binaries, returns
-// UnsupportedFormat until an RDNA2-to-DXIL lifter is implemented.
+// Translates a Scarlett/Xbox DXBC, DXIL, or precompiled RDNA2 (XS2\0) shader into a
+// PC-compatible DXBC/DXIL container by stripping Xbox-private chunks (XBOX, XS2M, XDBG)
+// or lifting RDNA2 microcode to HLSL and compiling to DXBC.
 Status TranslateXboxShaderToPc(
     const std::vector<uint8_t>& xbox_bytecode,
     ShaderTranslationResult& out_result);

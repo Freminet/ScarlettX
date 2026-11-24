@@ -16,7 +16,7 @@
 | ![Concept Destruction main menu running in ScarlettX](docs/image_00_01.png) | ![Concept Destruction gameplay running in ScarlettX](docs/image_00_02.png) |
 | Max FPS: 1189<br>Average FPS: 1082<br>Minimum FPS: 264 | Max FPS: 247<br>Average FPS: 188<br>Minimum FPS: 91 |
 
-**Emulator Status:** `66.6%` (281 of 422 tracked functions, including unimplemented `0%` subsystems) · **Concept Destruction:** `91.3%` (42 of 46 bring-up milestones) · **Exports:** `269` · **Tests:** `26/26` passing · **Target:** `Xbox Series X|S (Gen9)`
+**Emulator Status:** `68.5%` (289 of 422 tracked functions, including unimplemented `0%` subsystems) · **Concept Destruction:** `91.3%` (42 of 46 bring-up milestones) · **Exports:** `269` · **Tests:** `27/27` passing · **Target:** `Xbox Series X|S (Gen9)`
 
 | Subsystem | Category | Progress | Coverage | Details |
 | :--- | :--- | :---: | :---: | :--- |
@@ -33,10 +33,10 @@
 | **XMem & Threading** | `xgameruntime` | `11 of 16` | `69%` | 11 exports; default/custom alloc hooks, VirtualAlloc/Free, time-sensitive thread state |
 | **Middleware (Bink2 / FSR)** | `Middleware` | `22 of 34` | `65%` | 12 Bink2Scarlett + 10 amd_fidelityfx_loader/upscaler_xbox exports; deterministic offline HLE shims (synthetic RGBA/BGRA frames, bilinear upscale & hash) |
 | **XUser & Identity** | `xgameruntime` | `13 of 24` | `54%` | 13 exports; synthetic Xbox Live profile, XUID, gamertag components, privileges |
+| **RDNA2 XS2 Shader Lifting** | `Graphics` | `8 of 16` | `50%` | XS2 container parser, GFX10.3 SOP/VOP/SMEM/MUBUF/FLAT/EXP decoder & disassembler, CFG reconstruction, and Compute/Vertex/Pixel HLSL-to-DXBC lifter executed on D3D12 |
 | **Hardware DXR & Vulkan Backend** | `Graphics` | `0 of 14` | `0%` | Hardware GPU ray tracing (DXR Tier 1.1) and cross-platform Vulkan / vkd3d-proton backend |
 | **Live Xbox Services (XSAPI/WinRT)** | `Platform` | `0 of 16` | `0%` | Full Xbl* Xbox Live services, WinRT runtime activation, achievements, multiplayer |
 | **Production Codecs (XMA2/GDeflate/Bink)** | `Media` | `0 of 16` | `0%` | Native SHAPE XMA2 transform audio, hardware GDeflate/BCPack, production Bink2 & GPU FSR |
-| **RDNA2 XS2 Shader Lifting** | `Graphics` | `0 of 16` | `0%` | Precompiled RDNA2/Scarlett GPU microcode lifting to PC DXIL or SPIR-V |
 | **Retail XVC/XVD Crypto** | `Storage` | `0 of 12` | `0%` | Encrypted & digitally signed retail .xvc/.xvd package decryption and verification |
 | **Xbox Unified Memory & KernelX** | `Platform` | `0 of 14` | `0%` | MEM_GRAPHICS, 64 KB / 4 MB physical-virtual aliasing, full Game OS kernel services |
 
