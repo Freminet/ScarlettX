@@ -21,6 +21,7 @@ add_library(scarlettx_core STATIC
     src/kernel/xruntime.cpp
     src/kernel/xstorage.cpp
     src/gpu/d3d12_backend.cpp
+    src/gpu/rdna2_xs2.cpp
     src/gpu/rt_bvh.cpp
     src/gpu/shader_ir.cpp
     src/gpu/xg_layout.cpp
@@ -334,6 +335,9 @@ target_link_libraries(test_gameinput PRIVATE GameInput)
 
 scarlettx_add_test(test_shader_pipeline tests/test_shader_pipeline.cpp)
 target_link_libraries(test_shader_pipeline PRIVATE d3d12_xs)
+
+scarlettx_add_test(test_rdna2_xs2 tests/test_rdna2_xs2.cpp)
+target_link_libraries(test_rdna2_xs2 PRIVATE d3d12_xs)
 
 scarlettx_add_test(test_middleware_net tests/test_middleware_net.cpp)
 target_link_libraries(test_middleware_net PRIVATE

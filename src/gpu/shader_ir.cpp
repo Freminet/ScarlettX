@@ -3,6 +3,8 @@
 #include <cstring>
 #include <utility>
 
+#include "scarlettx/gpu/rdna2_xs2.h"
+
 #if defined(_WIN32)
 #include <windows.h>
 #include <d3dcompiler.h>
@@ -42,6 +44,18 @@ ShaderStage DecodeDxbcProgramType(uint16_t program_type) {
     }
 }
 
+ShaderStage MapXs2Stage(gpu::Xs2Stage stage) {
+    switch (stage) {
+        case gpu::Xs2Stage::Compute: return ShaderStage::Compute;
+        case gpu::Xs2Stage::Vertex: return ShaderStage::Vertex;
+        case gpu::Xs2Stage::Pixel: return ShaderStage::Pixel;
+        case gpu::Xs2Stage::Geometry: return ShaderStage::Geometry;
+        case gpu::Xs2Stage::Hull: return ShaderStage::Hull;
+        case gpu::Xs2Stage::Domain: return ShaderStage::Domain;
+        default: return ShaderStage::Unknown;
+    }
+}
+
 }  // namespace
 
 uint64_t HashShaderBytes(const uint8_t* data, size_t size) {
@@ -63,6 +77,33 @@ Status InspectShaderContainer(const std::vector<uint8_t>& bytecode, ShaderModule
 
     if (bytecode.size() >= 4 && std::memcmp(bytecode.data(), "XS2\0", 4) == 0) {
         out_info.kind = ShaderContainerKind::ScarlettRdna2;
+        out_info.chunk_fourccs.push_back("XS2");
+        if (bytecode.size() >= gpu::kXs2HeaderSize) {
+            gpu::Xs2Module xs2{};
+            Status st = gpu::ParseXs2Container(bytecode, xs2);
+            if (!st.ok()) {
+                return st;
+            }
+            out_info.stage = MapXs2Stage(xs2.header.stage);
+            out_info.shader_model_major = 6;
+            out_info.shader_model_minor = 5;
+            out_info.chunk_count = 1;
+            for (const auto& b : xs2.bindings) {
+                if (b.kind == gpu::Xs2BindingKind::VertexInput) ++out_info.input_param_count;
+                if (b.kind == gpu::Xs2BindingKind::RenderTarget) ++out_info.output_param_count;
+            }
+            std::vector<gpu::Rdna2Instruction> insns;
+            if (gpu::DecodeRdna2Program(xs2.code_words, insns).ok()) {
+                out_info.disassembly_summary = gpu::DisassembleRdna2(insns);
+                if (out_info.output_param_count == 0) {
+                    for (const auto& insn : insns) {
+                        if (insn.mnemonic == gpu::Rdna2Mnemonic::EXP) {
+                            ++out_info.output_param_count;
+                        }
+                    }
+                }
+            }
+        }
         return Status::Ok();
     }
 
@@ -147,9 +188,20 @@ Status TranslateXboxShaderToPc(
     }
 
     if (out_result.source_info.kind == ShaderContainerKind::ScarlettRdna2) {
-        return Status::Error(
-            StatusCode::UnsupportedFormat,
-            "Precompiled Scarlett RDNA2 (XS2) shader lifting to DXIL is not yet implemented");
+        auto lifted = gpu::LiftXs2ToDxbc(xbox_bytecode);
+        if (!lifted.ok()) {
+            return lifted.status;
+        }
+        out_result.pc_bytecode = std::move(lifted.value.dxbc_bytecode);
+        out_result.lifted_hlsl = std::move(lifted.value.hlsl_source);
+        out_result.source_info.disassembly_summary = std::move(lifted.value.disassembly);
+        out_result.source_info.input_param_count = lifted.value.input_param_count;
+        if (lifted.value.output_param_count > 0) {
+            out_result.source_info.output_param_count = lifted.value.output_param_count;
+        }
+        out_result.translated_hash =
+            HashShaderBytes(out_result.pc_bytecode.data(), out_result.pc_bytecode.size());
+        return Status::Ok();
     }
 
     if (!out_result.source_info.has_xbox_private_chunks) {

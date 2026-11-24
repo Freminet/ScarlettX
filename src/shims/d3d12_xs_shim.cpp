@@ -3201,6 +3201,29 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyCreateGraphicsPipelineState(
     if (!obj || !obj->pc_device || !pDesc || !out) return static_cast<intptr_t>(E_INVALIDARG);
     *out = nullptr;
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = *reinterpret_cast<const D3D12_GRAPHICS_PIPELINE_STATE_DESC*>(pDesc);
+    auto maybe_lift_xs2 = [](D3D12_SHADER_BYTECODE& bc, std::vector<uint8_t>& storage) -> HRESULT {
+        if (bc.pShaderBytecode && bc.BytecodeLength >= 4 &&
+            std::memcmp(bc.pShaderBytecode, "XS2\0", 4) == 0) {
+            const auto* raw = static_cast<const uint8_t*>(bc.pShaderBytecode);
+            std::vector<uint8_t> in_bytes(raw, raw + bc.BytecodeLength);
+            scarlettx::ShaderTranslationResult tr{};
+            if (auto st = scarlettx::TranslateXboxShaderToPc(in_bytes, tr); !st.ok()) {
+                return E_FAIL;
+            }
+            storage = std::move(tr.pc_bytecode);
+            bc.pShaderBytecode = storage.data();
+            bc.BytecodeLength = storage.size();
+        }
+        return S_OK;
+    };
+    std::vector<uint8_t> vs_lifted, ps_lifted, ds_lifted, hs_lifted, gs_lifted;
+    if (FAILED(maybe_lift_xs2(desc.VS, vs_lifted)) ||
+        FAILED(maybe_lift_xs2(desc.PS, ps_lifted)) ||
+        FAILED(maybe_lift_xs2(desc.DS, ds_lifted)) ||
+        FAILED(maybe_lift_xs2(desc.HS, hs_lifted)) ||
+        FAILED(maybe_lift_xs2(desc.GS, gs_lifted))) {
+        return static_cast<intptr_t>(E_FAIL);
+    }
     if (desc.pRootSignature) {
         desc.pRootSignature = reinterpret_cast<ID3D12RootSignature*>(
             reinterpret_cast<XboxD3D12SimpleObjectProxy*>(desc.pRootSignature)->pc_obj);
@@ -3238,6 +3261,19 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyCreateComputePipelineState(
     if (!obj || !obj->pc_device || !pDesc || !out) return static_cast<intptr_t>(E_INVALIDARG);
     *out = nullptr;
     D3D12_COMPUTE_PIPELINE_STATE_DESC desc = *reinterpret_cast<const D3D12_COMPUTE_PIPELINE_STATE_DESC*>(pDesc);
+    std::vector<uint8_t> cs_lifted;
+    if (desc.CS.pShaderBytecode && desc.CS.BytecodeLength >= 4 &&
+        std::memcmp(desc.CS.pShaderBytecode, "XS2\0", 4) == 0) {
+        const auto* raw = static_cast<const uint8_t*>(desc.CS.pShaderBytecode);
+        std::vector<uint8_t> in_bytes(raw, raw + desc.CS.BytecodeLength);
+        scarlettx::ShaderTranslationResult tr{};
+        if (auto st = scarlettx::TranslateXboxShaderToPc(in_bytes, tr); !st.ok()) {
+            return static_cast<intptr_t>(E_FAIL);
+        }
+        cs_lifted = std::move(tr.pc_bytecode);
+        desc.CS.pShaderBytecode = cs_lifted.data();
+        desc.CS.BytecodeLength = cs_lifted.size();
+    }
     if (desc.pRootSignature) {
         desc.pRootSignature = reinterpret_cast<ID3D12RootSignature*>(
             reinterpret_cast<XboxD3D12SimpleObjectProxy*>(desc.pRootSignature)->pc_obj);
