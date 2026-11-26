@@ -258,6 +258,26 @@ int main() {
     CHECK(XUserCheckPrivilege(user, XUserPrivilegeOptions_None, XUserPrivilege_Multiplayer, &has_priv, &deny) == XGR_S_OK);
     CHECK(has_priv && deny == XUserPrivilegeDenyReason_None);
 
+    // XUserGetTokenAndSignatureAsync
+    XAsyncBlock token_async{};
+    token_async.queue = tp_q;
+    CHECK(XUserGetTokenAndSignatureAsync(nullptr, XUserGetTokenAndSignatureOptions_None, "GET", "https://auth.xboxlive.com", 0, nullptr, 0, nullptr, &token_async) == XGR_E_INVALIDARG);
+    CHECK(XUserGetTokenAndSignatureAsync(user, XUserGetTokenAndSignatureOptions_None, "GET", "https://auth.xboxlive.com", 0, nullptr, 0, nullptr, nullptr) == XGR_E_INVALIDARG);
+    CHECK(XUserGetTokenAndSignatureAsync(user, XUserGetTokenAndSignatureOptions_None, "GET", "https://auth.xboxlive.com", 0, nullptr, 0, nullptr, &token_async) == XGR_S_OK);
+
+    size_t token_buf_size = 0;
+    CHECK(XUserGetTokenAndSignatureResultSize(&token_async, &token_buf_size) == XGR_S_OK && token_buf_size > sizeof(XUserGetTokenAndSignatureData));
+
+    std::vector<uint8_t> token_buffer(token_buf_size);
+    XUserGetTokenAndSignatureData* token_data = nullptr;
+    size_t token_buf_used = 0;
+    CHECK(XUserGetTokenAndSignatureResult(&token_async, 4, token_buffer.data(), &token_data, &token_buf_used) == XGR_E_NOT_SUFFICIENT_BUFFER);
+    CHECK(XUserGetTokenAndSignatureResult(&token_async, token_buf_size, token_buffer.data(), &token_data, &token_buf_used) == XGR_S_OK);
+    CHECK(token_data != nullptr);
+    CHECK(token_data->token != nullptr && std::strlen(token_data->token) > 0);
+    CHECK(token_data->signature != nullptr && std::strlen(token_data->signature) > 0);
+    CHECK(token_buf_used == token_buf_size);
+
     // 6. XGameSave (async init, write, sync + async read, enumerate, delete)
     XAsyncBlock save_init_async{};
     save_init_async.queue = tp_q;

@@ -1,5 +1,6 @@
 // Drives the guest-facing DirectStorage objects the way a title does: one
 // imported function, then raw vtable slots and SDK-layout structures.
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -56,10 +57,40 @@ struct Request {
 constexpr uint64_t kSourceMemory = 1ull << 22;
 constexpr uint64_t kZlib = 1ull << 0;
 constexpr int kCreateQueue = 3, kOpenFile = 4, kCreateStatusArray = 5;
-constexpr int kEnqueueRequest = 3, kEnqueueStatus = 4, kSubmit = 6;
+constexpr int kEnqueueRequest = 3, kEnqueueStatus = 4, kEnqueueSignal = 5, kSubmit = 6, kCancelRequestsWithTag = 7;
 constexpr int kFileClose = 3, kFileGetHandle = 4;
 constexpr int kIsComplete = 3, kGetHResult = 4;
 constexpr int kRelease = 2;
+
+struct MockFence {
+    void* vtable_ptr;
+    void* vtable[16];
+    std::atomic<uint32_t> ref_count{1};
+    std::atomic<uint64_t> completed_val{0};
+
+    static uint32_t WINAPI AddRef(void* self) {
+        return static_cast<MockFence*>(self)->ref_count.fetch_add(1) + 1;
+    }
+    static uint32_t WINAPI Release(void* self) {
+        return static_cast<MockFence*>(self)->ref_count.fetch_sub(1) - 1;
+    }
+    static uint64_t WINAPI GetCompletedValue(void* self) {
+        return static_cast<MockFence*>(self)->completed_val.load();
+    }
+    static int32_t WINAPI Signal(void* self, uint64_t val) {
+        static_cast<MockFence*>(self)->completed_val.store(val);
+        return 0;
+    }
+
+    MockFence() {
+        vtable_ptr = vtable;
+        for (int i = 0; i < 16; ++i) vtable[i] = nullptr;
+        vtable[1] = reinterpret_cast<void*>(&AddRef);
+        vtable[2] = reinterpret_cast<void*>(&Release);
+        vtable[8] = reinterpret_cast<void*>(&GetCompletedValue);
+        vtable[10] = reinterpret_cast<void*>(&Signal);
+    }
+};
 
 uint8_t Pattern(size_t i) { return static_cast<uint8_t>(i * 7 + (i >> 8) + 3); }
 
@@ -237,13 +268,34 @@ int main() {
     SX_CHECK(WaitComplete(status, 2));
     SX_CHECK(VCall<int32_t>(status, kGetHResult, 2u) < 0);
 
+    // Test EnqueueSignal (slot 5) with a fence.
+    MockFence fence;
+    VCall<void>(mem_queue, kEnqueueRequest, &rm);
+    VCall<void>(mem_queue, kEnqueueSignal, &fence, 999ull);
+    SX_CHECK(fence.completed_val.load() == 0);
+    VCall<void>(mem_queue, kSubmit);
+    for (int i = 0; i < 5000 && fence.completed_val.load() < 999ull; ++i) Sleep(1);
+    SX_CHECK(fence.completed_val.load() == 999ull);
+
+    // Test CancelRequestsWithTag (slot 7).
+    std::vector<uint8_t> cancel_dst(4096);
+    Request r_cancel = rm;
+    r_cancel.destination = cancel_dst.data();
+    r_cancel.cancellation_tag = 0xCAFE;
+    VCall<void>(mem_queue, kEnqueueRequest, &r_cancel);
+    VCall<void>(mem_queue, kCancelRequestsWithTag, 0xFFFFull, 0xCAFEull);
+    VCall<void>(mem_queue, kEnqueueStatus, status, 3u);
+    VCall<void>(mem_queue, kSubmit);
+    SX_CHECK(WaitComplete(status, 3));
+    SX_CHECK(VCall<int32_t>(status, kGetHResult, 3u) == static_cast<int32_t>(0x80004004u));
+
     SX_CHECK(VCall<uint32_t>(mem_queue, kRelease) == 0);
     SX_CHECK(VCall<uint32_t>(queue, kRelease) == 0);
     SX_CHECK(VCall<uint32_t>(status, kRelease) == 0);
     VCall<uint32_t>(factory, kRelease);
     SX_CHECK(DeleteFileW(path));
 
-    std::cout << "[PASS] test_dstorage_guest (factory, file, queues, status array)\n";
+    std::cout << "[PASS] test_dstorage_guest (factory, file, queues, status array, signal, cancellation)\n";
     return 0;
 }
 

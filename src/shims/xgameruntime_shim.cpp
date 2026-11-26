@@ -573,6 +573,126 @@ XGameResult XUserGetDefaultXuid(uint64_t* out_xuid) {
     return XGR_S_OK;
 }
 
+XGameResult XUserGetTokenAndSignatureAsync(
+    XUserHandle user,
+    XUserGetTokenAndSignatureOptions /*options*/,
+    const char* /*method*/,
+    const char* /*url*/,
+    size_t /*headerCount*/,
+    const XUserGetTokenAndSignatureHttpHeader* /*headers*/,
+    size_t /*bodySize*/,
+    const void* /*bodyBuffer*/,
+    XAsyncBlock* async) {
+    if (!async || !user) {
+        return XGR_E_INVALIDARG;
+    }
+
+    char xuid_str[32]{};
+    std::snprintf(xuid_str, sizeof(xuid_str), "%016llX", static_cast<unsigned long long>(user->xuid));
+    std::string token = std::string("XBL3.0 x=") + xuid_str + ";synthetic_offline_token";
+    std::string signature = "AAAAAQAA_synthetic_offline_signature";
+
+    const size_t token_bytes = token.size() + 1;
+    const size_t sig_bytes = signature.size() + 1;
+    const size_t required_size = sizeof(XUserGetTokenAndSignatureData) + token_bytes + sig_bytes;
+
+    return BeginAsyncOperation(async, [token = std::move(token), signature = std::move(signature), required_size](XAsyncState* st) {
+        std::vector<uint8_t> payload;
+        auto append = [&](const void* data, size_t len) {
+            const auto* p = static_cast<const uint8_t*>(data);
+            payload.insert(payload.end(), p, p + len);
+        };
+        uint32_t tlen = static_cast<uint32_t>(token.size() + 1);
+        uint32_t slen = static_cast<uint32_t>(signature.size() + 1);
+        append(&tlen, sizeof(tlen));
+        append(token.c_str(), tlen);
+        append(&slen, sizeof(slen));
+        append(signature.c_str(), slen);
+
+        st->result_payload = std::move(payload);
+        CompleteAsyncState(st, XGR_S_OK, required_size);
+    });
+}
+
+XGameResult XUserGetTokenAndSignatureResultSize(
+    XAsyncBlock* async,
+    size_t* bufferSize) {
+    if (!async || !bufferSize) {
+        return XGR_E_INVALIDARG;
+    }
+    XGameResult hr = XAsyncGetStatus(async, true);
+    if (hr != XGR_S_OK) {
+        return hr;
+    }
+    auto state = GetAsyncState(async);
+    if (!state) {
+        return XGR_E_INVALIDARG;
+    }
+    *bufferSize = state->result_size;
+    return XGR_S_OK;
+}
+
+XGameResult XUserGetTokenAndSignatureResult(
+    XAsyncBlock* async,
+    size_t bufferSize,
+    void* buffer,
+    XUserGetTokenAndSignatureData** ptrToBuffer,
+    size_t* bufferUsed) {
+    if (!async || !buffer || !ptrToBuffer) {
+        return XGR_E_INVALIDARG;
+    }
+    XGameResult hr = XAsyncGetStatus(async, true);
+    if (hr != XGR_S_OK) {
+        return hr;
+    }
+    auto state = GetAsyncState(async);
+    if (!state) {
+        return XGR_E_INVALIDARG;
+    }
+    if (bufferSize < state->result_size) {
+        return XGR_E_NOT_SUFFICIENT_BUFFER;
+    }
+
+    const auto& payload = state->result_payload;
+    if (payload.size() < sizeof(uint32_t) * 2) {
+        return XGR_E_FAIL;
+    }
+
+    size_t off = 0;
+    uint32_t tlen = 0;
+    std::memcpy(&tlen, payload.data() + off, sizeof(tlen));
+    off += sizeof(tlen);
+    const char* token_src = reinterpret_cast<const char*>(payload.data() + off);
+    off += tlen;
+
+    uint32_t slen = 0;
+    std::memcpy(&slen, payload.data() + off, sizeof(slen));
+    off += sizeof(slen);
+    const char* sig_src = reinterpret_cast<const char*>(payload.data() + off);
+
+    auto* data = reinterpret_cast<XUserGetTokenAndSignatureData*>(buffer);
+    char* str_ptr = reinterpret_cast<char*>(data + 1);
+
+    data->tokenSize = tlen;
+    data->signatureSize = slen;
+
+    std::memcpy(str_ptr, token_src, tlen);
+    data->token = str_ptr;
+    str_ptr += tlen;
+
+    std::memcpy(str_ptr, sig_src, slen);
+    data->signature = str_ptr;
+    str_ptr += slen;
+
+    *ptrToBuffer = data;
+    if (bufferUsed) {
+        *bufferUsed = state->result_size;
+    }
+
+    xgr::ReleaseHleAsyncResult(async);
+    return XGR_S_OK;
+}
+
 // ===========================================================================
 // XGameSave.h
 // ===========================================================================
