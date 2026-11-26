@@ -248,4 +248,49 @@ const char* BinkGetError(void) {
     return g_last_error.c_str();
 }
 
+void BinkSetSoundTrack(BINK* /*bnk*/, uint32_t /*total_tracks*/) {}
+
+void BinkSetVideoOnOff(BINK* /*bnk*/, int32_t /*onoff*/) {}
+
+void BinkSetFrameRate(BINK* bnk, uint32_t rate, uint32_t scale) {
+    if (!bnk) return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (rate > 0) bnk->FrameRate = rate;
+    if (scale > 0) bnk->FrameRateDiv = scale;
+}
+
+void BinkGetFrameRate(BINK* bnk, uint32_t* rate, uint32_t* scale) {
+    if (!bnk) return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (rate) *rate = bnk->FrameRate;
+    if (scale) *scale = bnk->FrameRateDiv;
+}
+
+int32_t BinkGetRects(BINK* bnk, uint32_t* rect_count, void* /*rects*/) {
+    if (!bnk) return 0;
+    if (rect_count) *rect_count = 0;
+    return 0;
+}
+
+void BinkGetRealtime(BINK* /*bnk*/, void* /*realtime*/, uint32_t /*flags*/) {}
+
+int32_t BinkGetTrackType(BINK* /*bnk*/, uint32_t /*track_index*/, uint32_t* track_type) {
+    if (track_type) *track_type = 0;
+    return 0;
+}
+
+int32_t BinkService(BINK* bnk) {
+    return bnk ? 0 : -1;
+}
+
+void BinkSetMixBins(BINK* /*bnk*/, uint32_t /*track_id*/, const uint32_t* /*mix_bins*/, uint32_t /*count*/) {}
+
+void BinkSetMixBinVolumes(BINK* /*bnk*/, uint32_t /*track_id*/, const float* /*volumes*/, uint32_t /*count*/) {}
+
+void BinkSetMemory(void* /*alloc_func*/, void* /*free_func*/) {}
+
+void* BinkOpenMiles(void* miles_driver) {
+    return miles_driver;
+}
+
 }  // extern "C"

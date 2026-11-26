@@ -73,6 +73,18 @@ SCARLETTX_BINK2_API void BinkSetSoundOnOff(BINK* bnk, int32_t onoff);
 SCARLETTX_BINK2_API void BinkSetVolume(BINK* bnk, uint32_t track_id, int32_t volume);
 SCARLETTX_BINK2_API void BinkGetSummary(BINK* bnk, BINKSUMMARY* sum);
 SCARLETTX_BINK2_API const char* BinkGetError(void);
+SCARLETTX_BINK2_API void BinkSetSoundTrack(BINK* bnk, uint32_t total_tracks);
+SCARLETTX_BINK2_API void BinkSetVideoOnOff(BINK* bnk, int32_t onoff);
+SCARLETTX_BINK2_API void BinkSetFrameRate(BINK* bnk, uint32_t rate, uint32_t scale);
+SCARLETTX_BINK2_API void BinkGetFrameRate(BINK* bnk, uint32_t* rate, uint32_t* scale);
+SCARLETTX_BINK2_API int32_t BinkGetRects(BINK* bnk, uint32_t* rect_count, void* rects);
+SCARLETTX_BINK2_API void BinkGetRealtime(BINK* bnk, void* realtime, uint32_t flags);
+SCARLETTX_BINK2_API int32_t BinkGetTrackType(BINK* bnk, uint32_t track_index, uint32_t* track_type);
+SCARLETTX_BINK2_API int32_t BinkService(BINK* bnk);
+SCARLETTX_BINK2_API void BinkSetMixBins(BINK* bnk, uint32_t track_id, const uint32_t* mix_bins, uint32_t count);
+SCARLETTX_BINK2_API void BinkSetMixBinVolumes(BINK* bnk, uint32_t track_id, const float* volumes, uint32_t count);
+SCARLETTX_BINK2_API void BinkSetMemory(void* alloc_func, void* free_func);
+SCARLETTX_BINK2_API void* BinkOpenMiles(void* miles_driver);
 
 #ifdef __cplusplus
 }
