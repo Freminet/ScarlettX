@@ -58,6 +58,12 @@ void HoldSignal(uint64_t, void* ctx) {
 }
 
 int TestQueueSubmission(uint64_t factory) {
+    DSTORAGE_CONFIGURATION cfg{};
+    cfg.NumSubmitThreads = 4;
+    SX_CHECK_EQ(DStorageSetConfiguration(&cfg), 0);
+    DSTORAGE_CONFIGURATION got_cfg{};
+    SX_CHECK_EQ(DStorageGetConfiguration(&got_cfg), 0);
+    SX_CHECK_EQ(got_cfg.NumSubmitThreads, 4u);
     using namespace std::chrono_literals;
 
     DSTORAGE_QUEUE_DESC desc{};

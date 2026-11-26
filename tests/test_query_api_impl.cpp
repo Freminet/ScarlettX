@@ -366,6 +366,21 @@ int main() {
         // XUserFindUserById is in the table but not implemented.
         CHECK(LoadVtableSlot<FnOther>(xuser, 0x60)(xuser, 0, 0, 0) == static_cast<XGameResult>(0x80004001u));
 
+        // XUserGetTokenAndSignatureAsync (slot 23 = 0xB8), ResultSize (0xC0), Result (0xC8)
+        using FnTokenAsync = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, void*, uint32_t, const char*, const char*, size_t, const void*, size_t, const void*, XAsyncBlock*);
+        using FnTokenResultSize = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, XAsyncBlock*, size_t*);
+        using FnTokenResult = XGameResult (SCARLETTX_GDK_CALLBACK*)(void*, XAsyncBlock*, size_t, void*, XUserGetTokenAndSignatureData**, size_t*);
+        XAsyncBlock tab{};
+        CHECK(LoadVtableSlot<FnTokenAsync>(xuser, 0xB8)(xuser, nullptr, 0u, "GET", "https://auth.xboxlive.com", 0, nullptr, 0, nullptr, &tab) == XGR_E_INVALIDARG);
+        CHECK(LoadVtableSlot<FnTokenAsync>(xuser, 0xB8)(xuser, user, 0u, "GET", "https://auth.xboxlive.com", 0, nullptr, 0, nullptr, &tab) == XGR_S_OK);
+        size_t tsz = 0;
+        CHECK(LoadVtableSlot<FnTokenResultSize>(xuser, 0xC0)(xuser, &tab, &tsz) == XGR_S_OK && tsz > sizeof(XUserGetTokenAndSignatureData));
+        std::vector<uint8_t> tbuf(tsz);
+        XUserGetTokenAndSignatureData* tdata = nullptr;
+        size_t tused = 0;
+        CHECK(LoadVtableSlot<FnTokenResult>(xuser, 0xC8)(xuser, &tab, tsz, tbuf.data(), &tdata, &tused) == XGR_S_OK);
+        CHECK(tdata != nullptr && tdata->token != nullptr);
+
         CHECK(LoadVtableSlot<FnUnregister>(xuser, 0x110)(xuser, token, true));
         CHECK(!LoadVtableSlot<FnUnregister>(xuser, 0x110)(xuser, 0, true));
         LoadVtableSlot<FnClose>(xuser, 0x20)(xuser, user);

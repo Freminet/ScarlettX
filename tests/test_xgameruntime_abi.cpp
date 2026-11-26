@@ -166,6 +166,9 @@ int main() {
     CHECK(XSystemGetXboxLiveSandboxId(sizeof(buf), buf, &used) == XGR_S_OK);
     CHECK(std::strcmp(buf, "RETAIL") == 0);
 
+    XSystemAllowFullDownloadBandwidth(true);
+    XSystemAllowFullDownloadBandwidth(false);
+
     // 3. XTaskQueue (manual + monitor + delayed + duplicate + terminate)
     XTaskQueueHandle manual_q = nullptr;
     CHECK(XTaskQueueCreate(XTaskQueueDispatchMode_Manual,
@@ -173,14 +176,18 @@ int main() {
                            &manual_q) == XGR_S_OK);
     CHECK(manual_q != nullptr);
     CHECK(XSystemIsHandleValid(manual_q));
+    CHECK(XTaskQueueIsEmpty(manual_q, XTaskQueuePort_Work) == true);
+    CHECK(XTaskQueueIsEmpty(manual_q, XTaskQueuePort_Completion) == true);
 
     XTaskQueueRegistrationToken mon_token{};
     CHECK(XTaskQueueRegisterMonitor(manual_q, nullptr, MonitorCb, &mon_token) == XGR_S_OK);
 
     int counter = 5;
     CHECK(XTaskQueueSubmitCallback(manual_q, XTaskQueuePort_Work, &counter, ManualWorkCb) == XGR_S_OK);
+    CHECK(XTaskQueueIsEmpty(manual_q, XTaskQueuePort_Work) == false);
     CHECK(g_monitor_hits.load() == 1);
     CHECK(XTaskQueueDispatch(manual_q, XTaskQueuePort_Work, 0) == true);
+    CHECK(XTaskQueueIsEmpty(manual_q, XTaskQueuePort_Work) == true);
     CHECK(counter == 15);
     CHECK(g_manual_work_hits.load() == 1);
     CHECK(XTaskQueueDispatch(manual_q, XTaskQueuePort_Work, 0) == false);
@@ -257,6 +264,26 @@ int main() {
     XUserPrivilegeDenyReason deny = XUserPrivilegeDenyReason_Unknown;
     CHECK(XUserCheckPrivilege(user, XUserPrivilegeOptions_None, XUserPrivilege_Multiplayer, &has_priv, &deny) == XGR_S_OK);
     CHECK(has_priv && deny == XUserPrivilegeDenyReason_None);
+
+    // XUserGetTokenAndSignatureAsync
+    XAsyncBlock token_async{};
+    token_async.queue = tp_q;
+    CHECK(XUserGetTokenAndSignatureAsync(nullptr, XUserGetTokenAndSignatureOptions_None, "GET", "https://auth.xboxlive.com", 0, nullptr, 0, nullptr, &token_async) == XGR_E_INVALIDARG);
+    CHECK(XUserGetTokenAndSignatureAsync(user, XUserGetTokenAndSignatureOptions_None, "GET", "https://auth.xboxlive.com", 0, nullptr, 0, nullptr, nullptr) == XGR_E_INVALIDARG);
+    CHECK(XUserGetTokenAndSignatureAsync(user, XUserGetTokenAndSignatureOptions_None, "GET", "https://auth.xboxlive.com", 0, nullptr, 0, nullptr, &token_async) == XGR_S_OK);
+
+    size_t token_buf_size = 0;
+    CHECK(XUserGetTokenAndSignatureResultSize(&token_async, &token_buf_size) == XGR_S_OK && token_buf_size > sizeof(XUserGetTokenAndSignatureData));
+
+    std::vector<uint8_t> token_buffer(token_buf_size);
+    XUserGetTokenAndSignatureData* token_data = nullptr;
+    size_t token_buf_used = 0;
+    CHECK(XUserGetTokenAndSignatureResult(&token_async, 4, token_buffer.data(), &token_data, &token_buf_used) == XGR_E_NOT_SUFFICIENT_BUFFER);
+    CHECK(XUserGetTokenAndSignatureResult(&token_async, token_buf_size, token_buffer.data(), &token_data, &token_buf_used) == XGR_S_OK);
+    CHECK(token_data != nullptr);
+    CHECK(token_data->token != nullptr && std::strlen(token_data->token) > 0);
+    CHECK(token_data->signature != nullptr && std::strlen(token_data->signature) > 0);
+    CHECK(token_buf_used == token_buf_size);
 
     // 6. XGameSave (async init, write, sync + async read, enumerate, delete)
     XAsyncBlock save_init_async{};
