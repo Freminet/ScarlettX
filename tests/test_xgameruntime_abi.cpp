@@ -385,8 +385,35 @@ int main() {
     CHECK(XGameSaveEnumerateBlobInfo(container, &blobs_after_del, EnumBlobsCb) == XGR_S_OK);
     CHECK(blobs_after_del.empty());
 
+    // Test async quota
+    XAsyncBlock q_async{};
+    q_async.queue = tp_q;
+    CHECK(XGameSaveGetRemainingQuotaAsync(provider, &q_async) == XGR_S_OK);
+    int64_t async_q = 0;
+    CHECK(XGameSaveGetRemainingQuotaResult(&q_async, &async_q) == XGR_S_OK);
+    CHECK(async_q > 0);
+
+    // Test container enumeration by prefix
+    std::vector<std::string> prefix_containers;
+    CHECK(XGameSaveEnumerateContainerInfoByName(provider, "slot", &prefix_containers, EnumContainersCb) == XGR_S_OK);
+    CHECK(!prefix_containers.empty());
+
     XGameSaveCloseContainer(container);
-    CHECK(XGameSaveDeleteContainer(provider, "slot_0") == XGR_S_OK);
+
+    // Test async delete
+    XAsyncBlock del_async{};
+    del_async.queue = tp_q;
+    CHECK(XGameSaveDeleteContainerAsync(provider, "slot_0", &del_async) == XGR_S_OK);
+    CHECK(XGameSaveDeleteContainerResult(&del_async) == XGR_S_OK);
+
+    // Test XGameSaveFiles quota async
+    XAsyncBlock files_q_async{};
+    files_q_async.queue = tp_q;
+    CHECK(XGameSaveFilesGetRemainingQuotaAsync(user, "00000000-0000-0000-0000-00005ca00001", &files_q_async) == XGR_S_OK);
+    int64_t files_async_q = 0;
+    CHECK(XGameSaveFilesGetRemainingQuotaResult(&files_q_async, &files_async_q) == XGR_S_OK);
+    CHECK(files_async_q > 0);
+
     XGameSaveCloseProvider(provider);
 
     // 7. XMem hooks & VirtualAlloc
@@ -402,9 +429,19 @@ int main() {
     CHECK(g_custom_allocs.load() == 1 && g_custom_frees.load() == 1);
     CHECK(XMemSetAllocationHooks(nullptr, nullptr) == XGR_S_OK);
 
+    XMemResetVirtualAllocStats();
+    XMemVirtualAllocStats stats_before{};
+    CHECK(XMemGetVirtualAllocStats(&stats_before) == XGR_S_OK);
+    CHECK(stats_before.totalAllocatedBytes == 0);
+
     void* vmem = XMemVirtualAlloc(nullptr, 65536, 0, 0, 0);
     CHECK(vmem != nullptr);
     std::memset(vmem, 0xAB, 4096);
+
+    XMemVirtualAllocStats stats_after{};
+    CHECK(XMemGetVirtualAllocStats(&stats_after) == XGR_S_OK);
+    CHECK(stats_after.totalAllocatedBytes >= 65536);
+
     CHECK(XMemVirtualFree(vmem, 0, 0) == true);
 
     // The call a title makes: commit only, XMem flags 1, PAGE_READWRITE.
@@ -427,8 +464,12 @@ int main() {
     CHECK(XThreadIsTimeSensitive() == false);
     CHECK(XThreadSetTimeSensitive(true) == XGR_S_OK);
     CHECK(XThreadIsTimeSensitive() == true);
-    CHECK(XThreadSetTimeSensitive(false) == XGR_S_OK);
+    bool thread_ts = false;
+    CHECK(XThreadGetTimeSensitive(&thread_ts) == XGR_S_OK && thread_ts == true);
+    CHECK(XThreadSetTimeSensitiveThread(1234, false) == XGR_S_OK);
+    CHECK(XThreadIsTimeSensitive() == false);
     XThreadAssertNotTimeSensitive();
+    XThreadAssertTimeSensitive();
 
     // Cleanup
     XUserCloseHandle(user);

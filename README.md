@@ -16,21 +16,21 @@
 | ![Concept Destruction main menu running in ScarlettX](docs/image_00_01.png) | ![Concept Destruction gameplay running in ScarlettX](docs/image_00_02.png) |
 | Max FPS: 1189<br>Average FPS: 1082<br>Minimum FPS: 264 | Max FPS: 247<br>Average FPS: 188<br>Minimum FPS: 91 |
 
-**Emulator Status:** `69.4%` (293 of 422 tracked functions, including unimplemented `0%` subsystems) · **Concept Destruction:** `93.5%` (43 of 46 bring-up milestones) · **Exports:** `281` · **Tests:** `26/26` passing · **Target:** `Xbox Series X|S (Gen9)`
+**Emulator Status:** `72.3%` (305 of 422 tracked functions, including unimplemented `0%` subsystems) · **Concept Destruction:** `93.5%` (43 of 46 bring-up milestones) · **Exports:** `293` · **Tests:** `26/26` passing · **Target:** `Xbox Series X|S (Gen9)`
 
 | Subsystem | Category | Progress | Coverage | Details |
 | :--- | :--- | :---: | :---: | :--- |
 | **d3d12_xs → PC D3D12 & PSOs** | `Graphics` | `46 of 46` | `100%` | 45 exports + DXIL/DXBC container parser & Xbox-chunk stripper; root signatures, descriptor heaps, graphics/compute/software-DXR PSOs, pipeline cache, WARP or hardware adapter |
 | **Networking (HTTP / XCurl)** | `Networking` | `40 of 40` | `100%` | 21 libHttpClient.GDK + 19 XCurl exports; deterministic offline mock registry, async callbacks, headers, fallback responses |
+| **XGameSave (persistent)** | `xgameruntime` | `30 of 30` | `100%` | 30 exports; disk-backed containers, sync/async blob R/W, quota, delete |
 | **DirectStorage & XVD** | `Storage` | `24 of 24` | `100%` | 23 DStorage exports + unencrypted XVD parser/PackageVfs mounting; async worker queues, fence/status arrays, cancellation, synthetic LZ-RLE test codec |
 | **XTaskQueue & XAsync** | `xgameruntime` | `24 of 24` | `100%` | 16 XTaskQueue + 8 XAsync exports (manual/threadpool/delayed/monitors/cancel) |
 | **XSystem & Runtime** | `xgameruntime` | `18 of 18` | `100%` | 18 exports; Scarlett Anaconda device info, runtime/analytics, handle validation |
 | **Input (GameInput)** | `Input` | `16 of 16` | `100%` | 16 exports; virtual Xbox Series controller & keyboard, reading history (Current/Next/Previous), state injection, rumble forwarded to the host controller's two main motors |
+| **XMem & Threading** | `xgameruntime` | `16 of 16` | `100%` | 16 exports; default/custom alloc hooks, VirtualAlloc/Free, time-sensitive thread state |
 | **DXR / XboxBvhBuilder** | `Graphics` | `14 of 14` | `100%` | 10 BVH exports + DXR AS prebuild/build/destroy, BLAS update, single-ray trace, deterministic software BVH fallback (hardware DXR requires capable GPU) |
 | **PE64 Loader & Auto-Stubs** | `Core` | `6 of 6` | `100%` | PE32+ mapping, DIR64/HIGHLOW relocs, named/ordinal IAT, API-set redirection, x64 auto-stub thunks |
 | **Audio (XAudio2 / AcpHal)** | `Media` | `33 of 42` | `79%` | 33 exports (XAudio2_9 ordinal #1 + AcpHal.dll APU/SHAPE shims); headless PCM mixer, WAV writer, fail-closed real-title COM guard, synthetic XMA2 test decoder |
-| **XGameSave (persistent)** | `xgameruntime` | `23 of 30` | `77%` | 23 exports; disk-backed containers, sync/async blob R/W, quota, delete |
-| **XMem & Threading** | `xgameruntime` | `11 of 16` | `69%` | 11 exports; default/custom alloc hooks, VirtualAlloc/Free, time-sensitive thread state |
 | **XUser & Identity** | `xgameruntime` | `16 of 24` | `67%` | 16 exports; synthetic Xbox Live profile, XUID, gamertag components, privileges |
 | **Middleware (Bink2 / FSR)** | `Middleware` | `22 of 34` | `65%` | 12 Bink2Scarlett + 10 amd_fidelityfx_loader/upscaler_xbox exports; deterministic offline HLE shims (synthetic RGBA/BGRA frames, bilinear upscale & hash) |
 | **Hardware DXR & Vulkan Backend** | `Graphics` | `0 of 14` | `0%` | Hardware GPU ray tracing (DXR Tier 1.1) and cross-platform Vulkan / vkd3d-proton backend |

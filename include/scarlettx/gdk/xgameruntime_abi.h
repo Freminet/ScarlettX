@@ -452,6 +452,12 @@ SCARLETTX_XGR_API void XGameSaveCloseProvider(XGameSaveProviderHandle provider);
 SCARLETTX_XGR_API XGameResult XGameSaveGetRemainingQuota(
     XGameSaveProviderHandle provider,
     int64_t* remainingQuota);
+SCARLETTX_XGR_API XGameResult XGameSaveGetRemainingQuotaAsync(
+    XGameSaveProviderHandle provider,
+    XAsyncBlock* async);
+SCARLETTX_XGR_API XGameResult XGameSaveGetRemainingQuotaResult(
+    XAsyncBlock* async,
+    int64_t* remainingQuota);
 SCARLETTX_XGR_API XGameResult XGameSaveCreateContainer(
     XGameSaveProviderHandle provider,
     const char* name,
@@ -460,8 +466,19 @@ SCARLETTX_XGR_API void XGameSaveCloseContainer(XGameSaveContainerHandle context)
 SCARLETTX_XGR_API XGameResult XGameSaveDeleteContainer(
     XGameSaveProviderHandle provider,
     const char* name);
+SCARLETTX_XGR_API XGameResult XGameSaveDeleteContainerAsync(
+    XGameSaveProviderHandle provider,
+    const char* name,
+    XAsyncBlock* async);
+SCARLETTX_XGR_API XGameResult XGameSaveDeleteContainerResult(
+    XAsyncBlock* async);
 SCARLETTX_XGR_API XGameResult XGameSaveEnumerateContainerInfo(
     XGameSaveProviderHandle provider,
+    void* context,
+    XGameSaveContainerInfoCallback* callback);
+SCARLETTX_XGR_API XGameResult XGameSaveEnumerateContainerInfoByName(
+    XGameSaveProviderHandle provider,
+    const char* containerNamePrefix,
     void* context,
     XGameSaveContainerInfoCallback* callback);
 SCARLETTX_XGR_API XGameResult XGameSaveCreateUpdate(
@@ -521,6 +538,13 @@ SCARLETTX_XGR_API XGameResult XGameSaveFilesGetRemainingQuota(
     XUserHandle userContext,
     const char* configurationId,
     int64_t* remainingQuota);
+SCARLETTX_XGR_API XGameResult XGameSaveFilesGetRemainingQuotaAsync(
+    XUserHandle userContext,
+    const char* configurationId,
+    XAsyncBlock* async);
+SCARLETTX_XGR_API XGameResult XGameSaveFilesGetRemainingQuotaResult(
+    XAsyncBlock* async,
+    int64_t* remainingQuota);
 
 // ---------------------------------------------------------------------------
 // XPackage.h
@@ -562,12 +586,22 @@ SCARLETTX_XGR_API bool XMemVirtualFree(
     size_t size,
     uint32_t freeType);
 
+struct XMemVirtualAllocStats {
+    size_t totalAllocatedBytes;
+    size_t totalReservedBytes;
+};
+SCARLETTX_XGR_API XGameResult XMemGetVirtualAllocStats(XMemVirtualAllocStats* stats);
+SCARLETTX_XGR_API void XMemResetVirtualAllocStats();
+
 // ---------------------------------------------------------------------------
 // XThread.h & XGame.h
 // ---------------------------------------------------------------------------
 SCARLETTX_XGR_API bool XThreadIsTimeSensitive();
 SCARLETTX_XGR_API XGameResult XThreadSetTimeSensitive(bool isTimeSensitive);
 SCARLETTX_XGR_API void XThreadAssertNotTimeSensitive();
+SCARLETTX_XGR_API void XThreadAssertTimeSensitive();
+SCARLETTX_XGR_API XGameResult XThreadGetTimeSensitive(bool* isTimeSensitive);
+SCARLETTX_XGR_API XGameResult XThreadSetTimeSensitiveThread(uint32_t threadId, bool isTimeSensitive);
 SCARLETTX_XGR_API XGameResult XGameGetXboxTitleId(uint32_t* titleId);
 
 // ---------------------------------------------------------------------------
