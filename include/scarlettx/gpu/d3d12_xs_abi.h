@@ -234,6 +234,11 @@ SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12XsCreateRootSignatureDes
     size_t srcDataSizeInBytes,
     const void* pRootSignatureDeserializerInterface,
     void** ppRootSignatureDeserializer);
+SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12XsCreateVersionedRootSignatureDeserializer(
+    const void* pSrcData,
+    size_t srcDataSizeInBytes,
+    const void* pRootSignatureDeserializerInterface,
+    void** ppRootSignatureDeserializer);
 SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12XsEnableExperimentalFeatures(
     uint32_t numFeatures,
     const void* pIIDs,
@@ -483,6 +488,13 @@ SCARLETTX_BVH_API int32_t XboxBvhDispatchRays(
     const SCARLETT_RT_DISPATCH_DESC* desc,
     const char* optional_ppm_path,
     uint64_t* out_frame_hash);
+SCARLETTX_BVH_API int32_t XboxBvhGetPostbuildInfo(
+    uint64_t handle,
+    uint32_t postbuild_info_type,
+    uint64_t* out_info);
+SCARLETTX_BVH_API int32_t XboxBvhCopy(
+    uint64_t source_handle,
+    uint64_t* out_dest_handle);
 SCARLETTX_BVH_API int32_t XboxBvhDestroy(uint64_t handle);
 
 }  // extern "C"

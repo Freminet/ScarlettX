@@ -57,6 +57,21 @@ int main() {
         BinkGetSummary(bnk, &sum);
         SX_CHECK(sum.Width == 320 && sum.Height == 180);
         SX_CHECK(sum.TotalPlayedFrames == 2);
+
+        BinkSetFrameRate(bnk, 60, 1);
+        uint32_t r = 0, sc = 0;
+        BinkGetFrameRate(bnk, &r, &sc);
+        SX_CHECK(r == 60 && sc == 1);
+        SX_CHECK(BinkService(bnk) == 0);
+        uint32_t track_type = 999;
+        SX_CHECK(BinkGetTrackType(bnk, 0, &track_type) == 0 && track_type == 0);
+        uint32_t rects = 999;
+        SX_CHECK(BinkGetRects(bnk, &rects, nullptr) == 0 && rects == 0);
+        BinkSetVideoOnOff(bnk, 1);
+        BinkSetSoundTrack(bnk, 1);
+        BinkSetMemory(nullptr, nullptr);
+        SX_CHECK(BinkOpenMiles(reinterpret_cast<void*>(0x1234)) == reinterpret_cast<void*>(0x1234));
+
         BinkClose(bnk);
     }
 
@@ -158,6 +173,15 @@ int main() {
         HCCallHandle call = nullptr;
         SX_CHECK(HCHttpCallCreate(&call) == SX_S_OK);
         SX_CHECK(HCHttpCallRequestSetUrl(call, "GET", "https://title.mgt.xboxlive.com/config") == SX_S_OK);
+        SX_CHECK(HCHttpCallRequestSetTimeout(call, 45) == SX_S_OK);
+        const char* q_method = nullptr;
+        const char* q_url = nullptr;
+        SX_CHECK(HCHttpCallRequestGetUrl(call, &q_method, &q_url) == SX_S_OK);
+        SX_CHECK(q_method && std::string(q_method) == "GET");
+        SX_CHECK(q_url && std::string(q_url) == "https://title.mgt.xboxlive.com/config");
+        uint32_t q_timeout = 0;
+        SX_CHECK(HCHttpCallRequestGetTimeout(call, &q_timeout) == SX_S_OK);
+        SX_CHECK(q_timeout == 45);
         SX_CHECK(HCHttpCallRequestSetHeader(call, "Accept", "application/json", 1) == SX_S_OK);
 
         bool completed = false;

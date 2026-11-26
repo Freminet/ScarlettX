@@ -49,6 +49,8 @@ struct Layout {
     int copy_texture_region_x;  // command list
     int other_layout_slot;      // where the other SDK has it
     int queue_signal;
+    int flush_pipeline_x;       // command list slot for FlushPipelineX
+    int other_flush_slot;       // where the other SDK has it
 };
 
 void* CreateResource(void* device, D3D12_HEAP_TYPE heap, const D3D12_RESOURCE_DESC& desc,
@@ -126,6 +128,10 @@ void Check(const Layout& layout) {
     SX_REQUIRE(Call(list, layout.other_layout_slot, &in_texture, uintptr_t{0}, uintptr_t{0}, uintptr_t{0}, &in_buffer,
                     static_cast<void*>(nullptr), uintptr_t{0}) == kNotImplemented);
 
+    // Slot 67 / 69 (FlushPipelineX) behaves according to SDK layout version.
+    SX_REQUIRE(Call(list, layout.flush_pipeline_x, uintptr_t{0}, uintptr_t{0}, uintptr_t{0}) == 0);
+    SX_REQUIRE(Call(list, layout.other_flush_slot, uintptr_t{0}, uintptr_t{0}, uintptr_t{0}) == kNotImplemented);
+
     // Upload with CopyTextureRegionX, flags 0, as the title does.
     Call(list, layout.copy_texture_region_x, &in_texture, uintptr_t{0}, uintptr_t{0}, uintptr_t{0}, &in_buffer,
          static_cast<void*>(nullptr), uintptr_t{0});
@@ -158,8 +164,8 @@ void Check(const Layout& layout) {
     Call(readback, kResUnmap, uintptr_t{0}, static_cast<void*>(nullptr));
 
     for (void* object : {readback, upload, texture, fence, list, allocator, queue, device}) Call(object, kRelease);
-    std::printf("test_d3d12_list_layout: version 0x%X, CopyTextureRegionX at slot %d OK\n", layout.version,
-                layout.copy_texture_region_x);
+    std::printf("test_d3d12_list_layout: version 0x%X, CopyTextureRegionX at slot %d, FlushPipelineX at slot %d OK\n",
+                layout.version, layout.copy_texture_region_x, layout.flush_pipeline_x);
 }
 
 }  // namespace
@@ -168,8 +174,8 @@ int main() {
     // Select the guest-facing proxies (also set by CTest for this test).
     _putenv_s("SCARLETTX_REAL_TITLE", "1");
 
-    Check({0x20001, 83, 85, 14});
-    Check({0x20004, 85, 83, 16});
+    Check({0x20001, 83, 85, 14, 67, 69});
+    Check({0x20004, 85, 83, 16, 69, 67});
 
     std::printf("test_d3d12_list_layout: OK\n");
     return 0;

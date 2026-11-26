@@ -774,6 +774,13 @@ int32_t GameInputGetDeviceInfo(
     return kE_INVALIDARG;
 }
 
+int32_t GameInputFindDeviceFromId(
+    uint64_t game_input,
+    uint64_t device_id,
+    GAMEINPUT_DEVICE_INFO* out_info) {
+    return GameInputGetDeviceInfo(game_input, device_id, out_info);
+}
+
 int32_t GameInputGetCurrentReading(
     uint64_t game_input,
     uint32_t input_kind,

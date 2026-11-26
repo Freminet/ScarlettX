@@ -58,6 +58,10 @@ int main() {
         vm.Option = 0xFFFFFFFFu;
         vm.Result0 = vm.Result1 = ~0ull;
         SX_CHECK(D3D12ConfigureVirtualMemoryX(&vm) >= 0);
+
+        void* deserializer = nullptr;
+        const IID iid_deserializer = __uuidof(ID3D12RootSignatureDeserializer);
+        SX_CHECK(D3D12XsCreateVersionedRootSignatureDeserializer(nullptr, 0, &iid_deserializer, &deserializer) < 0);
         SX_CHECK(vm.Result0 == 0 && vm.Result1 == 0);
         SX_CHECK_EQ(D3D12ConfigureVirtualMemoryX(nullptr), static_cast<int32_t>(0x80070057u));
         vm.Flags = 2;
@@ -273,6 +277,16 @@ int main() {
     SX_CHECK_EQ(XboxBvhTraceSingleRay(tlas, &ray, &hit), 0);
     SX_CHECK_EQ(hit.Hit, 1u);
     SX_CHECK(std::fabs(hit.T - 1.5f) < 0.01f);
+
+    // Test XboxBvhGetPostbuildInfo and XboxBvhCopy
+    uint64_t postbuild_size = 0;
+    SX_CHECK_EQ(XboxBvhGetPostbuildInfo(blas, 0, &postbuild_size), 0);
+    SX_CHECK(postbuild_size > 0);
+
+    uint64_t copied_blas = 0;
+    SX_CHECK_EQ(XboxBvhCopy(blas, &copied_blas), 0);
+    SX_CHECK(copied_blas != 0 && copied_blas != blas);
+    SX_CHECK_EQ(XboxBvhDestroy(copied_blas), 0);
 
     // Ray pointing away should miss
     ray.Direction[2] = -1.0f;
