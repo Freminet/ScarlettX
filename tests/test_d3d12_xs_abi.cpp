@@ -278,6 +278,16 @@ int main() {
     SX_CHECK_EQ(hit.Hit, 1u);
     SX_CHECK(std::fabs(hit.T - 1.5f) < 0.01f);
 
+    // Test XboxBvhGetPostbuildInfo and XboxBvhCopy
+    uint64_t postbuild_size = 0;
+    SX_CHECK_EQ(XboxBvhGetPostbuildInfo(blas, 0, &postbuild_size), 0);
+    SX_CHECK(postbuild_size > 0);
+
+    uint64_t copied_blas = 0;
+    SX_CHECK_EQ(XboxBvhCopy(blas, &copied_blas), 0);
+    SX_CHECK(copied_blas != 0 && copied_blas != blas);
+    SX_CHECK_EQ(XboxBvhDestroy(copied_blas), 0);
+
     // Ray pointing away should miss
     ray.Direction[2] = -1.0f;
     SCARLETT_RAY_HIT miss{};

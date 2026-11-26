@@ -232,6 +232,55 @@ int32_t XboxBvhDispatchRays(uint64_t tlas_handle,
     return 0;
 }
 
+int32_t XboxBvhGetPostbuildInfo(uint64_t handle,
+                                uint32_t postbuild_info_type,
+                                uint64_t* out_info) {
+    (void)postbuild_info_type;
+    if (!out_info) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(g_bvh_mutex);
+    const scarlettx::BvhAccelerationStructure* bvh = nullptr;
+    if (auto tit = g_tlas_map.find(handle); tit != g_tlas_map.end()) {
+        bvh = &tit->second->bvh;
+    } else if (auto bit = g_blas_map.find(handle); bit != g_blas_map.end()) {
+        bvh = &bit->second.bvh;
+    }
+    if (!bvh) {
+        return -2;
+    }
+    const uint64_t size = AlignUp(static_cast<uint64_t>(bvh->NodeCount()) * 128 +
+                                  static_cast<uint64_t>(bvh->TriangleCount()) * 64 + 256, 256);
+    *out_info = size;
+    return 0;
+}
+
+int32_t XboxBvhCopy(uint64_t source_handle, uint64_t* out_dest_handle) {
+    if (!out_dest_handle) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(g_bvh_mutex);
+    if (auto tit = g_tlas_map.find(source_handle); tit != g_tlas_map.end()) {
+        auto copy = std::make_unique<TlasEntry>();
+        copy->bvh = tit->second->bvh;
+        const uint64_t handle = g_next_bvh_handle++;
+        g_tlas_map[handle] = std::move(copy);
+        *out_dest_handle = handle;
+        return 0;
+    }
+    if (auto bit = g_blas_map.find(source_handle); bit != g_blas_map.end()) {
+        BlasEntry copy;
+        copy.triangles = bit->second.triangles;
+        copy.build_flags = bit->second.build_flags;
+        copy.bvh = bit->second.bvh;
+        const uint64_t handle = g_next_bvh_handle++;
+        g_blas_map[handle] = std::move(copy);
+        *out_dest_handle = handle;
+        return 0;
+    }
+    return -2;
+}
+
 int32_t XboxBvhDestroy(uint64_t handle) {
     std::lock_guard<std::mutex> lock(g_bvh_mutex);
     if (g_blas_map.erase(handle) > 0 || g_tlas_map.erase(handle) > 0) {

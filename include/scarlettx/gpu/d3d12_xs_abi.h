@@ -488,6 +488,13 @@ SCARLETTX_BVH_API int32_t XboxBvhDispatchRays(
     const SCARLETT_RT_DISPATCH_DESC* desc,
     const char* optional_ppm_path,
     uint64_t* out_frame_hash);
+SCARLETTX_BVH_API int32_t XboxBvhGetPostbuildInfo(
+    uint64_t handle,
+    uint32_t postbuild_info_type,
+    uint64_t* out_info);
+SCARLETTX_BVH_API int32_t XboxBvhCopy(
+    uint64_t source_handle,
+    uint64_t* out_dest_handle);
 SCARLETTX_BVH_API int32_t XboxBvhDestroy(uint64_t handle);
 
 }  // extern "C"
