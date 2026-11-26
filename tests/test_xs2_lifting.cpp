@@ -100,6 +100,69 @@ int main() {
     SX_CHECK(Xs2ShaderClearPipelineCache(pipeline) == 0);
     SX_CHECK(Xs2ShaderDestroyTranslationPipeline(pipeline) == 0);
 
+    // 7. Advanced RAGE Engine Compute Shader Lifting (RDNA2 ISA)
+    std::cout << "[test_xs2_lifting] Verifying RAGE RDNA2 Compute Shader Lifting...\n";
+    const uint32_t rage_compute_kernel[] = {
+        0xF4000000, 0x00000000, // SMEM: s_load_dwordx4 (64-bit)
+        0x06000000,             // VOP2: v_add_f32 (32-bit)
+        0x10000000,             // VOP2: v_mul_f32 (32-bit)
+        0x32000000,             // VOP2: v_fmac_f32 (32-bit)
+        0xD4000000, 0x00000000, // VOP3: v_fma_f32 (64-bit)
+        0xE0000000, 0x00000000, // VMEM: buffer_load_dword (64-bit)
+        0xE2000000, 0x00000000, // VMEM: buffer_store_dword (64-bit)
+        0xD8000000, 0x00000000, // LDS:  ds_read_b32 (64-bit)
+        0xDA000000, 0x00000000, // LDS:  ds_write_b32 (64-bit)
+        0xBF8C007F,             // SOPP: s_waitcnt vmcnt(0) lgkmcnt(0) (32-bit)
+        0xBF800000              // SOPP: s_endpgm (32-bit)
+    };
+    const size_t rage_kernel_bytes = sizeof(rage_compute_kernel);
+
+    // Verify Compute stage classification
+    XS2_MICROCODE_INFO cs_info{};
+    SX_CHECK(Xs2ShaderIdentifyMicrocode(rage_compute_kernel, rage_kernel_bytes, &cs_info) == 0);
+    SX_CHECK(cs_info.stage == 3); // Identified as Compute Shader
+    SX_CHECK(cs_info.instructionCount == 11);
+
+    // Verify Disassembly mnemonics
+    char cs_disasm[1024]{};
+    size_t cs_disasm_len = 0;
+    SX_CHECK(Xs2ShaderDisassembleRdna2(rage_compute_kernel, rage_kernel_bytes, cs_disasm, sizeof(cs_disasm), &cs_disasm_len) == 0);
+    SX_CHECK(std::strstr(cs_disasm, "s_load_dwordx4") != nullptr);
+    SX_CHECK(std::strstr(cs_disasm, "v_fma_f32") != nullptr);
+    SX_CHECK(std::strstr(cs_disasm, "buffer_load_dword") != nullptr);
+    SX_CHECK(std::strstr(cs_disasm, "buffer_store_dword") != nullptr);
+    SX_CHECK(std::strstr(cs_disasm, "ds_read_b32") != nullptr);
+    SX_CHECK(std::strstr(cs_disasm, "ds_write_b32") != nullptr);
+    SX_CHECK(std::strstr(cs_disasm, "s_waitcnt") != nullptr);
+    SX_CHECK(std::strstr(cs_disasm, "s_endpgm") != nullptr);
+
+    // Verify UAV and SRV resource extraction
+    XS2_RESOURCE_BINDINGS cs_bindings{};
+    SX_CHECK(Xs2ShaderExtractResourceBindings(rage_compute_kernel, rage_kernel_bytes, &cs_bindings) == 0);
+    SX_CHECK(cs_bindings.uavCount >= 1);
+    SX_CHECK(cs_bindings.srvCount >= 4);
+    SX_CHECK(cs_bindings.cbvCount >= 2);
+
+    // Lift to DXIL and validate container
+    void* cs_dxil = nullptr;
+    size_t cs_dxil_size = 0;
+    SX_CHECK(Xs2ShaderLiftToDxil(rage_compute_kernel, rage_kernel_bytes, &opts, &cs_dxil, &cs_dxil_size) == 0);
+    SX_CHECK(cs_dxil != nullptr && cs_dxil_size > rage_kernel_bytes);
+    int32_t cs_dxil_valid = 0;
+    SX_CHECK(Xs2ShaderValidateDxilContainer(cs_dxil, cs_dxil_size, &cs_dxil_valid) == 0);
+    SX_CHECK(cs_dxil_valid == 1);
+    SX_CHECK(Xs2ShaderFreeBytecode(cs_dxil) == 0);
+
+    // Lift to SPIR-V and validate magic header
+    void* cs_spirv = nullptr;
+    size_t cs_spirv_size = 0;
+    SX_CHECK(Xs2ShaderLiftToSpirv(rage_compute_kernel, rage_kernel_bytes, &opts, &cs_spirv, &cs_spirv_size) == 0);
+    SX_CHECK(cs_spirv != nullptr && cs_spirv_size >= 20);
+    uint32_t spirv_magic = 0;
+    std::memcpy(&spirv_magic, cs_spirv, sizeof(spirv_magic));
+    SX_CHECK(spirv_magic == 0x07230203u);
+    SX_CHECK(Xs2ShaderFreeBytecode(cs_spirv) == 0);
+
     std::cout << "[test_xs2_lifting] All 16 Xs2Shader APIs verified successfully!\n";
     return 0;
 }

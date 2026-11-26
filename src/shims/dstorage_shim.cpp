@@ -1,6 +1,10 @@
 #include "scarlettx/io/dstorage_abi.h"
+#include "scarlettx/media/codecs_abi.h"
 
 #include <algorithm>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -143,6 +147,15 @@ struct FileObject {
     std::string path;
     uint64_t size = 0;
     scarlettx::XvdContainer xvd;
+#if defined(_WIN32)
+    void* hFile = nullptr;
+    ~FileObject() {
+        if (hFile) {
+            CloseHandle(static_cast<HANDLE>(hFile));
+            hFile = nullptr;
+        }
+    }
+#endif
 };
 
 struct StatusArrayObject {
@@ -279,8 +292,27 @@ int32_t ExecuteRequest(const DSTORAGE_REQUEST& req) {
         return kS_OK;
     }
 
-    if (req.CompressionFormat == DSTORAGE_COMPRESSION_FORMAT_LZ_RLE ||
-        req.CompressionFormat == DSTORAGE_COMPRESSION_FORMAT_GDEFLATE) {
+    if (req.CompressionFormat == DSTORAGE_COMPRESSION_FORMAT_GDEFLATE) {
+        uint32_t out_sz = 0;
+        int32_t hr = DecompressLzRle(
+            raw.data(),
+            static_cast<uint32_t>(raw.size()),
+            static_cast<uint8_t*>(req.DestinationMemory),
+            req.DestinationSize,
+            &out_sz);
+        if (hr == kS_OK) {
+            return kS_OK;
+        }
+        size_t written = 0;
+        int32_t codec_hr = XboxCodecGDeflateDecompress(
+            raw.data(), raw.size(), req.DestinationMemory, req.DestinationSize, &written);
+        if (codec_hr == 0 && written > 0) {
+            return kS_OK;
+        }
+        return hr;
+    }
+
+    if (req.CompressionFormat == DSTORAGE_COMPRESSION_FORMAT_LZ_RLE) {
         uint32_t out_sz = 0;
         return DecompressLzRle(
             raw.data(),
@@ -414,6 +446,16 @@ int32_t DStorageOpenFile(uint64_t factory, const char* path, uint64_t* out_file)
     obj->is_xvd = false;
     obj->path = path;
     obj->size = static_cast<uint64_t>(end_pos);
+#if defined(_WIN32)
+    obj->hFile = CreateFileA(
+        path,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr);
+#endif
 
     std::lock_guard<std::mutex> lk(State().mu);
     const uint64_t h = State().next_handle++;

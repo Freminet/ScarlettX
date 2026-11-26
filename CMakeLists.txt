@@ -93,16 +93,17 @@ target_compile_definitions(XboxBvhBuilder PRIVATE SCARLETTX_BUILDING_XBOX_BVH=1)
 
 add_library(dstorage SHARED src/shims/dstorage_shim.cpp)
 set_target_properties(dstorage PROPERTIES PREFIX "" OUTPUT_NAME "dstorage")
-target_link_libraries(dstorage PRIVATE scarlettx_core)
+target_link_libraries(dstorage PRIVATE scarlettx_core xbox_codecs)
 target_compile_definitions(dstorage PRIVATE SCARLETTX_BUILDING_DSTORAGE=1)
 
 add_library(dstorage_xs SHARED src/shims/dstorage_shim.cpp)
 set_target_properties(dstorage_xs PROPERTIES PREFIX "" OUTPUT_NAME "dstorage_xs")
-target_link_libraries(dstorage_xs PRIVATE scarlettx_core)
+target_link_libraries(dstorage_xs PRIVATE scarlettx_core xbox_codecs)
 target_compile_definitions(dstorage_xs PRIVATE SCARLETTX_BUILDING_DSTORAGE=1)
 
 add_library(xcrdapi SHARED src/shims/dstorage_guest.cpp)
 set_target_properties(xcrdapi PROPERTIES PREFIX "" OUTPUT_NAME "xcrdapi")
+target_link_libraries(xcrdapi PRIVATE scarlettx_core xbox_codecs)
 
 add_library(xaudio2_9 SHARED src/shims/xaudio2_shim.cpp src/shims/xaudio2_guest.cpp src/shims/xaudio2_null_output.cpp src/shims/xaudio2_9.def)
 set_target_properties(xaudio2_9 PROPERTIES PREFIX "" OUTPUT_NAME "xaudio2_9")
