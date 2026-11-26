@@ -30,6 +30,7 @@ constexpr int32_t kOk = 0;
 constexpr int32_t kInvalidArg = static_cast<int32_t>(0x80070057u);
 constexpr int32_t kNotImpl = static_cast<int32_t>(0x80004001u);
 constexpr int32_t kPointer = static_cast<int32_t>(0x80004003u);
+constexpr int32_t kAbort = static_cast<int32_t>(0x80004004u);
 constexpr int32_t kPending = static_cast<int32_t>(0x8000000Au);
 constexpr int32_t kOutOfMemory = static_cast<int32_t>(0x8007000Eu);
 
@@ -230,15 +231,24 @@ void* const kFileVtbl[] = {
 
 struct Entry {
     bool is_status = false;
+    bool is_signal = false;
+    bool cancelled = false;
     Request request{};
     File* file = nullptr;           // held until the request has run
     StatusArray* status = nullptr;  // held until the status is written
     uint32_t index = 0;
+    void* fence = nullptr;          // held until the signal is written
+    uint64_t fence_value = 0;
 };
 
 void ReleaseEntry(const Entry& entry) {
     if (entry.file) ObjectRelease(entry.file);
     if (entry.status) ObjectRelease(entry.status);
+    if (entry.fence) {
+        void** vtbl = *reinterpret_cast<void***>(entry.fence);
+        using ReleaseFn = uint32_t (WINAPI*)(void*);
+        reinterpret_cast<ReleaseFn>(vtbl[2])(entry.fence);
+    }
 }
 
 struct Queue : Object {
@@ -289,8 +299,12 @@ void QueueRun(Queue* queue) {
             slot.hr.store(queue->first_failure);
             slot.complete.store(true);
             queue->first_failure = kOk;
+        } else if (entry.is_signal) {
+            void** vtbl = *reinterpret_cast<void***>(entry.fence);
+            using SignalFn = int32_t (WINAPI*)(void*, uint64_t);
+            reinterpret_cast<SignalFn>(vtbl[10])(entry.fence, entry.fence_value);
         } else {
-            const int32_t hr = RunRequest(queue, entry);
+            const int32_t hr = entry.cancelled ? kAbort : RunRequest(queue, entry);
             if (hr < 0) {
                 if (queue->first_failure >= 0) queue->first_failure = hr;
                 static std::atomic<int> reported{0};
@@ -375,13 +389,47 @@ void WINAPI QueueSubmit(Object* self) {
     SubmitLocked(queue);
 }
 
+void WINAPI QueueEnqueueSignal(Object* self, void* fence, uint64_t value) {
+    auto* queue = static_cast<Queue*>(self);
+    if (!fence) {
+        DS_LOG("EnqueueSignal ignored: fence is null");
+        return;
+    }
+    void** vtbl = *reinterpret_cast<void***>(fence);
+    using AddRefFn = uint32_t (WINAPI*)(void*);
+    reinterpret_cast<AddRefFn>(vtbl[1])(fence);
+
+    Entry entry;
+    entry.is_signal = true;
+    entry.fence = fence;
+    entry.fence_value = value;
+    std::lock_guard<std::mutex> lock(queue->mu);
+    EnqueueLocked(queue, entry);
+}
+
+void WINAPI QueueCancelRequestsWithTag(Object* self, uint64_t mask, uint64_t value) {
+    auto* queue = static_cast<Queue*>(self);
+    std::lock_guard<std::mutex> lock(queue->mu);
+    for (auto& entry : queue->pending) {
+        if (!entry.is_status && !entry.is_signal && (entry.request.cancellation_tag & mask) == value) {
+            entry.cancelled = true;
+        }
+    }
+    for (auto& entry : queue->submitted) {
+        if (!entry.is_status && !entry.is_signal && (entry.request.cancellation_tag & mask) == value) {
+            entry.cancelled = true;
+        }
+    }
+}
+
 void* const kQueueVtbl[] = {
     DS_SLOT(ObjectQueryInterface), DS_SLOT(ObjectAddRef), DS_SLOT(ObjectRelease),
-    DS_SLOT(QueueEnqueueRequest),  // 3, confirmed
-    DS_SLOT(QueueEnqueueStatus),   // 4, confirmed
-    DS_SLOT((UnnamedSlot<1, 5>)),
-    DS_SLOT(QueueSubmit),          // 6, confirmed
-    DS_SLOT((UnnamedSlot<1, 7>)),  DS_SLOT((UnnamedSlot<1, 8>)),  DS_SLOT((UnnamedSlot<1, 9>)),
+    DS_SLOT(QueueEnqueueRequest),         // 3, confirmed
+    DS_SLOT(QueueEnqueueStatus),          // 4, confirmed
+    DS_SLOT(QueueEnqueueSignal),          // 5, confirmed
+    DS_SLOT(QueueSubmit),                 // 6, confirmed
+    DS_SLOT(QueueCancelRequestsWithTag),  // 7, confirmed
+    DS_SLOT((UnnamedSlot<1, 8>)),  DS_SLOT((UnnamedSlot<1, 9>)),
     DS_SLOT((UnnamedSlot<1, 10>)), DS_SLOT((UnnamedSlot<1, 11>)),
 };
 

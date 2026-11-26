@@ -56,6 +56,24 @@ int main() {
     // 1x2 matrix: left=1.0, right=0.0
     const float pan_left[2] = {1.0f, 0.0f};
     SX_CHECK_EQ(XAudio2VoiceSetOutputMatrix(src_sine, 1, 2, pan_left), 0);
+    float pan_out[2] = {};
+    SX_CHECK_EQ(XAudio2VoiceGetOutputMatrix(src_sine, 1, 2, pan_out), 0);
+    SX_CHECK(std::fabs(pan_out[0] - 1.0f) < 1e-5f);
+    SX_CHECK(std::fabs(pan_out[1] - 0.0f) < 1e-5f);
+
+    const float ch_vols[2] = {0.8f, 0.9f};
+    SX_CHECK_EQ(XAudio2VoiceSetChannelVolumes(src_sine, 2, ch_vols), 0);
+    float ch_vols_out[2] = {};
+    SX_CHECK_EQ(XAudio2VoiceGetChannelVolumes(src_sine, 2, ch_vols_out), 0);
+    SX_CHECK(std::fabs(ch_vols_out[0] - 0.8f) < 1e-5f);
+    SX_CHECK(std::fabs(ch_vols_out[1] - 0.9f) < 1e-5f);
+
+    SX_CHECK_EQ(XAudio2VoiceEnableEffect(src_sine, 0), 0);
+    SX_CHECK_EQ(XAudio2VoiceDisableEffect(src_sine, 0), 0);
+    SX_CHECK_EQ(XAudio2VoiceDiscontinuity(src_sine), 0);
+    SX_CHECK_EQ(XAudio2VoiceExitLoop(src_sine), 0);
+    SX_CHECK_EQ(XAudio2CommitChanges(engine, 0), 0);
+    SX_CHECK_EQ(XAudio2VoiceSetVolumeRamp(src_sine, 0.7f, 100), 0);
 
     constexpr uint32_t kFrames = 480;
     std::vector<float> sine(kFrames);

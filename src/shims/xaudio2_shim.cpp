@@ -51,6 +51,8 @@ struct VoiceObject {
     uint32_t matrix_src_ch = 0;
     uint32_t matrix_dst_ch = 0;
     std::vector<float> output_matrix;
+    std::vector<float> channel_volumes;
+    bool loop_exited = false;
     std::deque<QueuedAudioBuffer> queue;
     uint64_t samples_played = 0;
 };
@@ -416,6 +418,84 @@ int32_t XAudio2VoiceSetOutputMatrix(
     vit->second->matrix_src_ch = src_channels;
     vit->second->matrix_dst_ch = dst_channels;
     vit->second->output_matrix.assign(level_matrix, level_matrix + src_channels * dst_channels);
+    return kS_OK;
+}
+
+int32_t XAudio2VoiceGetOutputMatrix(
+    uint64_t voice,
+    uint32_t src_channels,
+    uint32_t dst_channels,
+    float* level_matrix) {
+    if (!level_matrix || src_channels == 0 || dst_channels == 0) return kE_INVALIDARG;
+    std::lock_guard<std::mutex> lk(State().mu);
+    auto vit = State().voices.find(voice);
+    if (vit == State().voices.end()) return kE_HANDLE;
+    const size_t total = src_channels * dst_channels;
+    if (vit->second->output_matrix.size() == total) {
+        std::memcpy(level_matrix, vit->second->output_matrix.data(), total * sizeof(float));
+    } else {
+        std::fill_n(level_matrix, total, 1.0f);
+    }
+    return kS_OK;
+}
+
+int32_t XAudio2VoiceSetChannelVolumes(uint64_t voice, uint32_t channels, const float* volumes) {
+    if (!volumes || channels == 0) return kE_INVALIDARG;
+    std::lock_guard<std::mutex> lk(State().mu);
+    auto vit = State().voices.find(voice);
+    if (vit == State().voices.end()) return kE_HANDLE;
+    vit->second->channel_volumes.assign(volumes, volumes + channels);
+    return kS_OK;
+}
+
+int32_t XAudio2VoiceGetChannelVolumes(uint64_t voice, uint32_t channels, float* out_volumes) {
+    if (!out_volumes || channels == 0) return kE_INVALIDARG;
+    std::lock_guard<std::mutex> lk(State().mu);
+    auto vit = State().voices.find(voice);
+    if (vit == State().voices.end()) return kE_HANDLE;
+    for (uint32_t i = 0; i < channels; ++i) {
+        out_volumes[i] = (i < vit->second->channel_volumes.size()) ? vit->second->channel_volumes[i] : 1.0f;
+    }
+    return kS_OK;
+}
+
+int32_t XAudio2VoiceEnableEffect(uint64_t voice, uint32_t /*effect_index*/) {
+    std::lock_guard<std::mutex> lk(State().mu);
+    if (State().voices.find(voice) == State().voices.end()) return kE_HANDLE;
+    return kS_OK;
+}
+
+int32_t XAudio2VoiceDisableEffect(uint64_t voice, uint32_t /*effect_index*/) {
+    std::lock_guard<std::mutex> lk(State().mu);
+    if (State().voices.find(voice) == State().voices.end()) return kE_HANDLE;
+    return kS_OK;
+}
+
+int32_t XAudio2VoiceDiscontinuity(uint64_t voice) {
+    std::lock_guard<std::mutex> lk(State().mu);
+    if (State().voices.find(voice) == State().voices.end()) return kE_HANDLE;
+    return kS_OK;
+}
+
+int32_t XAudio2VoiceExitLoop(uint64_t voice) {
+    std::lock_guard<std::mutex> lk(State().mu);
+    auto vit = State().voices.find(voice);
+    if (vit == State().voices.end()) return kE_HANDLE;
+    vit->second->loop_exited = true;
+    return kS_OK;
+}
+
+int32_t XAudio2CommitChanges(uint64_t engine, uint32_t /*operation_set*/) {
+    std::lock_guard<std::mutex> lk(State().mu);
+    if (State().engines.find(engine) == State().engines.end()) return kE_HANDLE;
+    return kS_OK;
+}
+
+int32_t XAudio2VoiceSetVolumeRamp(uint64_t voice, float target_volume, uint32_t /*ramp_duration_ms*/) {
+    std::lock_guard<std::mutex> lk(State().mu);
+    auto vit = State().voices.find(voice);
+    if (vit == State().voices.end()) return kE_HANDLE;
+    vit->second->volume = target_volume;
     return kS_OK;
 }
 

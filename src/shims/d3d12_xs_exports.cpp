@@ -43,6 +43,16 @@ SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12CreateRootSignatureDeser
         ppRootSignatureDeserializer);
 }
 
+SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12CreateVersionedRootSignatureDeserializer(
+    const void* pSrcData,
+    size_t srcDataSizeInBytes,
+    const void* pRootSignatureDeserializerInterface,
+    void** ppRootSignatureDeserializer) {
+    return D3D12XsCreateVersionedRootSignatureDeserializer(
+        pSrcData, srcDataSizeInBytes, pRootSignatureDeserializerInterface,
+        ppRootSignatureDeserializer);
+}
+
 // The console reserves address space for its graphics driver here. The host
 // driver manages its own, so a valid request succeeds with nothing reserved.
 // 0x10000000 is what the console returns for a successful request.
