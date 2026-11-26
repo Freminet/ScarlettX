@@ -286,6 +286,8 @@ std::string MatchPackageLanguage(const std::string& locale, const std::vector<st
 std::mutex g_mem_hooks_mutex;
 XMemAllocFunction* g_mem_alloc_hook = nullptr;
 XMemFreeFunction* g_mem_free_hook = nullptr;
+std::atomic<size_t> g_mem_total_allocated{0};
+std::atomic<size_t> g_mem_total_reserved{0};
 
 // ---------------------------------------------------------------------------
 // XThread TLS flag
@@ -400,6 +402,16 @@ XGameResult XSystemGetXboxLiveSandboxId(
         sandboxIdSize,
         sandboxId,
         sandboxIdUsed);
+}
+
+static std::atomic<bool> g_allow_full_download_bandwidth{false};
+void XSystemAllowFullDownloadBandwidth(bool enable) {
+    g_allow_full_download_bandwidth.store(enable, std::memory_order_relaxed);
+    if (TraceEnabled()) {
+        std::fprintf(stderr, "[ScarlettX][xgameruntime] XSystemAllowFullDownloadBandwidth(%s)\n",
+                     enable ? "true" : "false");
+        std::fflush(stderr);
+    }
 }
 
 bool XSystemIsHandleValid(void* handle) {
@@ -573,6 +585,126 @@ XGameResult XUserGetDefaultXuid(uint64_t* out_xuid) {
     return XGR_S_OK;
 }
 
+XGameResult XUserGetTokenAndSignatureAsync(
+    XUserHandle user,
+    XUserGetTokenAndSignatureOptions /*options*/,
+    const char* /*method*/,
+    const char* /*url*/,
+    size_t /*headerCount*/,
+    const XUserGetTokenAndSignatureHttpHeader* /*headers*/,
+    size_t /*bodySize*/,
+    const void* /*bodyBuffer*/,
+    XAsyncBlock* async) {
+    if (!async || !user) {
+        return XGR_E_INVALIDARG;
+    }
+
+    char xuid_str[32]{};
+    std::snprintf(xuid_str, sizeof(xuid_str), "%016llX", static_cast<unsigned long long>(user->xuid));
+    std::string token = std::string("XBL3.0 x=") + xuid_str + ";synthetic_offline_token";
+    std::string signature = "AAAAAQAA_synthetic_offline_signature";
+
+    const size_t token_bytes = token.size() + 1;
+    const size_t sig_bytes = signature.size() + 1;
+    const size_t required_size = sizeof(XUserGetTokenAndSignatureData) + token_bytes + sig_bytes;
+
+    return BeginAsyncOperation(async, [token = std::move(token), signature = std::move(signature), required_size](XAsyncState* st) {
+        std::vector<uint8_t> payload;
+        auto append = [&](const void* data, size_t len) {
+            const auto* p = static_cast<const uint8_t*>(data);
+            payload.insert(payload.end(), p, p + len);
+        };
+        uint32_t tlen = static_cast<uint32_t>(token.size() + 1);
+        uint32_t slen = static_cast<uint32_t>(signature.size() + 1);
+        append(&tlen, sizeof(tlen));
+        append(token.c_str(), tlen);
+        append(&slen, sizeof(slen));
+        append(signature.c_str(), slen);
+
+        st->result_payload = std::move(payload);
+        CompleteAsyncState(st, XGR_S_OK, required_size);
+    });
+}
+
+XGameResult XUserGetTokenAndSignatureResultSize(
+    XAsyncBlock* async,
+    size_t* bufferSize) {
+    if (!async || !bufferSize) {
+        return XGR_E_INVALIDARG;
+    }
+    XGameResult hr = XAsyncGetStatus(async, true);
+    if (hr != XGR_S_OK) {
+        return hr;
+    }
+    auto state = GetAsyncState(async);
+    if (!state) {
+        return XGR_E_INVALIDARG;
+    }
+    *bufferSize = state->result_size;
+    return XGR_S_OK;
+}
+
+XGameResult XUserGetTokenAndSignatureResult(
+    XAsyncBlock* async,
+    size_t bufferSize,
+    void* buffer,
+    XUserGetTokenAndSignatureData** ptrToBuffer,
+    size_t* bufferUsed) {
+    if (!async || !buffer || !ptrToBuffer) {
+        return XGR_E_INVALIDARG;
+    }
+    XGameResult hr = XAsyncGetStatus(async, true);
+    if (hr != XGR_S_OK) {
+        return hr;
+    }
+    auto state = GetAsyncState(async);
+    if (!state) {
+        return XGR_E_INVALIDARG;
+    }
+    if (bufferSize < state->result_size) {
+        return XGR_E_NOT_SUFFICIENT_BUFFER;
+    }
+
+    const auto& payload = state->result_payload;
+    if (payload.size() < sizeof(uint32_t) * 2) {
+        return XGR_E_FAIL;
+    }
+
+    size_t off = 0;
+    uint32_t tlen = 0;
+    std::memcpy(&tlen, payload.data() + off, sizeof(tlen));
+    off += sizeof(tlen);
+    const char* token_src = reinterpret_cast<const char*>(payload.data() + off);
+    off += tlen;
+
+    uint32_t slen = 0;
+    std::memcpy(&slen, payload.data() + off, sizeof(slen));
+    off += sizeof(slen);
+    const char* sig_src = reinterpret_cast<const char*>(payload.data() + off);
+
+    auto* data = reinterpret_cast<XUserGetTokenAndSignatureData*>(buffer);
+    char* str_ptr = reinterpret_cast<char*>(data + 1);
+
+    data->tokenSize = tlen;
+    data->signatureSize = slen;
+
+    std::memcpy(str_ptr, token_src, tlen);
+    data->token = str_ptr;
+    str_ptr += tlen;
+
+    std::memcpy(str_ptr, sig_src, slen);
+    data->signature = str_ptr;
+    str_ptr += slen;
+
+    *ptrToBuffer = data;
+    if (bufferUsed) {
+        *bufferUsed = state->result_size;
+    }
+
+    xgr::ReleaseHleAsyncResult(async);
+    return XGR_S_OK;
+}
+
 // ===========================================================================
 // XGameSave.h
 // ===========================================================================
@@ -664,6 +796,42 @@ XGameResult XGameSaveGetRemainingQuota(
     return XGR_S_OK;
 }
 
+XGameResult XGameSaveGetRemainingQuotaAsync(
+    XGameSaveProviderHandle provider,
+    XAsyncBlock* async) {
+    if (!provider || !async) {
+        return XGR_E_INVALIDARG;
+    }
+    return BeginAsyncOperation(async, [provider](XAsyncState* st) {
+        int64_t remaining = 0;
+        XGameResult hr = XGameSaveGetRemainingQuota(provider, &remaining);
+        st->result_payload.resize(sizeof(int64_t));
+        std::memcpy(st->result_payload.data(), &remaining, sizeof(int64_t));
+        CompleteAsyncState(st, hr, sizeof(int64_t));
+    });
+}
+
+XGameResult XGameSaveGetRemainingQuotaResult(
+    XAsyncBlock* async,
+    int64_t* remainingQuota) {
+    if (!async || !remainingQuota) {
+        return XGR_E_INVALIDARG;
+    }
+    XGameResult hr = XAsyncGetStatus(async, true);
+    if (hr != XGR_S_OK) {
+        *remainingQuota = 0;
+        return hr;
+    }
+    auto state = GetAsyncState(async);
+    if (!state || state->result_payload.size() < sizeof(int64_t)) {
+        *remainingQuota = 0;
+        return XGR_E_FAIL;
+    }
+    std::memcpy(remainingQuota, state->result_payload.data(), sizeof(int64_t));
+    xgr::ReleaseHleAsyncResult(async);
+    return XGR_S_OK;
+}
+
 XGameResult XGameSaveCreateContainer(
     XGameSaveProviderHandle provider,
     const char* name,
@@ -710,6 +878,29 @@ XGameResult XGameSaveDeleteContainer(
     return ec ? XGR_E_FAIL : XGR_S_OK;
 }
 
+XGameResult XGameSaveDeleteContainerAsync(
+    XGameSaveProviderHandle provider,
+    const char* name,
+    XAsyncBlock* async) {
+    if (!provider || !name || !async) {
+        return XGR_E_INVALIDARG;
+    }
+    std::string cname = name;
+    return BeginAsyncOperation(async, [provider, cname](XAsyncState* st) {
+        XGameResult hr = XGameSaveDeleteContainer(provider, cname.c_str());
+        CompleteAsyncState(st, hr, 0);
+    });
+}
+
+XGameResult XGameSaveDeleteContainerResult(XAsyncBlock* async) {
+    if (!async) {
+        return XGR_E_INVALIDARG;
+    }
+    XGameResult hr = XAsyncGetStatus(async, true);
+    xgr::ReleaseHleAsyncResult(async);
+    return hr;
+}
+
 XGameResult XGameSaveEnumerateContainerInfo(
     XGameSaveProviderHandle provider,
     void* context,
@@ -733,6 +924,60 @@ XGameResult XGameSaveEnumerateContainerInfo(
             continue;
         }
         const std::string cname = entry.path().filename().string();
+        uint32_t blob_count = 0;
+        uint64_t total_size = 0;
+        for (const auto& f : fs::directory_iterator(entry.path(), ec)) {
+            if (f.is_regular_file(ec)) {
+                ++blob_count;
+                total_size += f.file_size(ec);
+            }
+        }
+        entries.push_back({cname, blob_count, total_size});
+    }
+    lock.unlock();
+    for (const auto& entry : entries) {
+        XGameSaveContainerInfo info{};
+        info.name = entry.name.c_str();
+        info.displayName = entry.name.c_str();
+        info.blobCount = entry.blob_count;
+        info.totalSize = entry.total_size;
+        info.lastModifiedTime = 0;
+        info.needsSync = false;
+        if (!callback(&info, context)) {
+            break;
+        }
+    }
+    return XGR_S_OK;
+}
+
+XGameResult XGameSaveEnumerateContainerInfoByName(
+    XGameSaveProviderHandle provider,
+    const char* containerNamePrefix,
+    void* context,
+    XGameSaveContainerInfoCallback* callback) {
+    if (!provider || !callback) {
+        return XGR_E_INVALIDARG;
+    }
+    const std::string prefix = containerNamePrefix ? containerNamePrefix : "";
+    struct Entry {
+        std::string name;
+        uint32_t blob_count;
+        uint64_t total_size;
+    };
+    std::vector<Entry> entries;
+    std::unique_lock<std::mutex> lock(provider->mutex);
+    std::error_code ec;
+    if (!fs::exists(provider->root_dir, ec)) {
+        return XGR_S_OK;
+    }
+    for (const auto& entry : fs::directory_iterator(provider->root_dir, ec)) {
+        if (!entry.is_directory(ec)) {
+            continue;
+        }
+        const std::string cname = entry.path().filename().string();
+        if (!prefix.empty() && cname.rfind(prefix, 0) != 0) {
+            continue;
+        }
         uint32_t blob_count = 0;
         uint64_t total_size = 0;
         for (const auto& f : fs::directory_iterator(entry.path(), ec)) {
@@ -1151,6 +1396,44 @@ XGameResult XGameSaveFilesGetRemainingQuota(
     return XGR_S_OK;
 }
 
+XGameResult XGameSaveFilesGetRemainingQuotaAsync(
+    XUserHandle userContext,
+    const char* configurationId,
+    XAsyncBlock* async) {
+    if (!userContext || !configurationId || !*configurationId || !async) {
+        return XGR_E_INVALIDARG;
+    }
+    std::string cfg = configurationId;
+    return BeginAsyncOperation(async, [userContext, cfg](XAsyncState* st) {
+        int64_t remaining = 0;
+        XGameResult hr = XGameSaveFilesGetRemainingQuota(userContext, cfg.c_str(), &remaining);
+        st->result_payload.resize(sizeof(int64_t));
+        std::memcpy(st->result_payload.data(), &remaining, sizeof(int64_t));
+        CompleteAsyncState(st, hr, sizeof(int64_t));
+    });
+}
+
+XGameResult XGameSaveFilesGetRemainingQuotaResult(
+    XAsyncBlock* async,
+    int64_t* remainingQuota) {
+    if (!async || !remainingQuota) {
+        return XGR_E_INVALIDARG;
+    }
+    XGameResult hr = XAsyncGetStatus(async, true);
+    if (hr != XGR_S_OK) {
+        *remainingQuota = 0;
+        return hr;
+    }
+    auto state = GetAsyncState(async);
+    if (!state || state->result_payload.size() < sizeof(int64_t)) {
+        *remainingQuota = 0;
+        return XGR_E_FAIL;
+    }
+    std::memcpy(remainingQuota, state->result_payload.data(), sizeof(int64_t));
+    xgr::ReleaseHleAsyncResult(async);
+    return XGR_S_OK;
+}
+
 // ===========================================================================
 // XPackage.h
 // ===========================================================================
@@ -1251,25 +1534,40 @@ void* XMemVirtualAlloc(
     if (!lpAddress && (flAlloc & MEM_COMMIT)) flAlloc |= MEM_RESERVE;
     const DWORD protect = flProtect ? static_cast<DWORD>(flProtect) : PAGE_READWRITE;
     const size_t size = (dwSize + page - 1) & ~(page - 1);
+    void* result = nullptr;
     if (lpAddress || page <= 0x10000) {
-        return VirtualAlloc(lpAddress, size, flAlloc, protect);
+        result = VirtualAlloc(lpAddress, size, flAlloc, protect);
+    } else {
+        // No address and more than the host's 64 KB granularity: find a free
+        // range, then claim its aligned part. Another thread can take it in
+        // between, hence the retries.
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            void* probe = VirtualAlloc(nullptr, size + page, MEM_RESERVE, PAGE_NOACCESS);
+            if (!probe) break;
+            VirtualFree(probe, 0, MEM_RELEASE);
+            const uintptr_t aligned = (reinterpret_cast<uintptr_t>(probe) + page - 1) & ~(page - 1);
+            if (void* p = VirtualAlloc(reinterpret_cast<void*>(aligned), size, flAlloc, protect)) {
+                result = p;
+                break;
+            }
+        }
     }
-    // No address and more than the host's 64 KB granularity: find a free
-    // range, then claim its aligned part. Another thread can take it in
-    // between, hence the retries.
-    for (int attempt = 0; attempt < 8; ++attempt) {
-        void* probe = VirtualAlloc(nullptr, size + page, MEM_RESERVE, PAGE_NOACCESS);
-        if (!probe) return nullptr;
-        VirtualFree(probe, 0, MEM_RELEASE);
-        const uintptr_t aligned = (reinterpret_cast<uintptr_t>(probe) + page - 1) & ~(page - 1);
-        if (void* p = VirtualAlloc(reinterpret_cast<void*>(aligned), size, flAlloc, protect)) return p;
+    if (result) {
+        g_mem_total_allocated.fetch_add(size, std::memory_order_relaxed);
+        g_mem_total_reserved.fetch_add(size, std::memory_order_relaxed);
     }
-    return nullptr;
+    return result;
 #else
     (void)lpAddress;
     (void)flAllocationType;
     (void)flProtect;
-    return std::calloc(1, dwSize == 0 ? 4096 : dwSize);
+    const size_t alloc_sz = dwSize == 0 ? 4096 : dwSize;
+    void* ptr = std::calloc(1, alloc_sz);
+    if (ptr) {
+        g_mem_total_allocated.fetch_add(alloc_sz, std::memory_order_relaxed);
+        g_mem_total_reserved.fetch_add(alloc_sz, std::memory_order_relaxed);
+    }
+    return ptr;
 #endif
 }
 
@@ -1279,13 +1577,35 @@ bool XMemVirtualFree(void* address, size_t size, uint32_t freeType) {
     }
 #if defined(_WIN32)
     DWORD flFree = freeType ? static_cast<DWORD>(freeType) : MEM_RELEASE;
-    return VirtualFree(address, flFree == MEM_RELEASE ? 0 : size, flFree) != 0;
+    bool ok = VirtualFree(address, flFree == MEM_RELEASE ? 0 : size, flFree) != 0;
+    if (ok) {
+        const size_t freed = size == 0 ? 4096 : size;
+        g_mem_total_allocated.fetch_sub(std::min(freed, g_mem_total_allocated.load(std::memory_order_relaxed)), std::memory_order_relaxed);
+        if (flFree == MEM_RELEASE) {
+            g_mem_total_reserved.fetch_sub(std::min(freed, g_mem_total_reserved.load(std::memory_order_relaxed)), std::memory_order_relaxed);
+        }
+    }
+    return ok;
 #else
     (void)size;
     (void)freeType;
     std::free(address);
     return true;
 #endif
+}
+
+XGameResult XMemGetVirtualAllocStats(XMemVirtualAllocStats* stats) {
+    if (!stats) {
+        return XGR_E_INVALIDARG;
+    }
+    stats->totalAllocatedBytes = g_mem_total_allocated.load(std::memory_order_relaxed);
+    stats->totalReservedBytes = g_mem_total_reserved.load(std::memory_order_relaxed);
+    return XGR_S_OK;
+}
+
+void XMemResetVirtualAllocStats() {
+    g_mem_total_allocated.store(0, std::memory_order_relaxed);
+    g_mem_total_reserved.store(0, std::memory_order_relaxed);
 }
 
 // ===========================================================================
@@ -1302,6 +1622,23 @@ XGameResult XThreadSetTimeSensitive(bool isTimeSensitive) {
 
 void XThreadAssertNotTimeSensitive() {
     // Non-fatal in HLE; real console triggers a debug break if time-sensitive.
+}
+
+void XThreadAssertTimeSensitive() {
+    // Non-fatal in HLE; real console triggers a debug break if not time-sensitive.
+}
+
+XGameResult XThreadGetTimeSensitive(bool* isTimeSensitive) {
+    if (!isTimeSensitive) {
+        return XGR_E_INVALIDARG;
+    }
+    *isTimeSensitive = g_thread_time_sensitive;
+    return XGR_S_OK;
+}
+
+XGameResult XThreadSetTimeSensitiveThread(uint32_t /*threadId*/, bool isTimeSensitive) {
+    g_thread_time_sensitive = isTimeSensitive;
+    return XGR_S_OK;
 }
 
 XGameResult XGameGetXboxTitleId(uint32_t* titleId) {
@@ -1554,7 +1891,7 @@ const XgrApiImpl073B7DCBVtable kApiImpl073B7DCBVtable = {{
     XGR_FORWARD(XGameResult, XThreadSetTimeSensitive, bool),                              // 27
     XGR_FORWARD(bool, XThreadIsTimeSensitive),                                            // 28
     XGR_FORWARD(void, XThreadAssertNotTimeSensitive),                                     // 29
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<30>),                      // 30
+    XGR_FORWARD(void, XThreadAssertTimeSensitive),                                        // 30
     reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<31>),                      // 31
 }};
 

@@ -98,6 +98,18 @@ HRESULT CallSystemD3D12CreateRootSignatureDeserializer(
     auto fn = reinterpret_cast<Fn>(GetProcAddress(m, "D3D12CreateRootSignatureDeserializer"));
     return fn ? fn(src, size, riid, ppv) : E_FAIL;
 }
+
+HRESULT CallSystemD3D12CreateVersionedRootSignatureDeserializer(
+    LPCVOID src,
+    SIZE_T size,
+    REFIID riid,
+    void** ppv) {
+    HMODULE m = GetSystemD3D12Module();
+    if (!m) return E_FAIL;
+    using Fn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, REFIID, void**);
+    auto fn = reinterpret_cast<Fn>(GetProcAddress(m, "D3D12CreateVersionedRootSignatureDeserializer"));
+    return fn ? fn(src, size, riid, ppv) : E_FAIL;
+}
 #endif
 
 uint32_t IntervalToHz(uint32_t interval) {
@@ -2002,6 +2014,21 @@ void SCARLETTX_GDK_CALLBACK CmdListClearRenderTargetViewTyped(
 #endif
 }
 intptr_t SCARLETTX_GDK_CALLBACK CmdListNoop(void*, uintptr_t, uintptr_t, uintptr_t) { return 0; }
+intptr_t SCARLETTX_GDK_CALLBACK CmdListFlushPipelineX(void* self, uintptr_t flags, uintptr_t a2, uintptr_t a3) {
+#if defined(_WIN32)
+    if (TraceEnabled()) {
+        std::cerr << "[ScarlettX][d3d12_xs] CmdList::FlushPipelineX(self=" << self
+                  << ", flags=0x" << std::hex << flags << ", a2=0x" << a2
+                  << ", a3=0x" << a3 << std::dec << ")\n";
+    }
+#else
+    (void)self;
+    (void)flags;
+    (void)a2;
+    (void)a3;
+#endif
+    return 0;
+}
 template <int Slot>
 intptr_t SCARLETTX_GDK_CALLBACK CmdListTracedSlot(void*, uintptr_t a1, uintptr_t a2, uintptr_t a3) {
     if (TraceEnabled()) {
@@ -2082,6 +2109,7 @@ std::array<ComVtableFn, 96> BuildCmdListVtable() {
     vtbl[60] = &CmdListNoop;  // SetMarker
     vtbl[61] = &CmdListNoop;  // BeginEvent
     vtbl[62] = &CmdListNoop;  // EndEvent
+    vtbl[67] = &CmdListFlushPipelineX;
     return vtbl;
 }
 const auto kXboxCmdListProxyVtbl = BuildCmdListVtable();
@@ -4268,6 +4296,28 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12XsCreateRootSignatureDeserializer(
     }
     const IID target_iid = *reinterpret_cast<const IID*>(pRootSignatureDeserializerInterface);
     return static_cast<int32_t>(CallSystemD3D12CreateRootSignatureDeserializer(
+        pSrcData,
+        srcDataSizeInBytes,
+        target_iid,
+        ppRootSignatureDeserializer));
+#else
+    (void)pSrcData; (void)srcDataSizeInBytes;
+    (void)pRootSignatureDeserializerInterface; (void)ppRootSignatureDeserializer;
+    return XGR_E_FAIL;
+#endif
+}
+
+int32_t SCARLETTX_GDK_CALLBACK D3D12XsCreateVersionedRootSignatureDeserializer(
+    const void* pSrcData,
+    size_t srcDataSizeInBytes,
+    const void* pRootSignatureDeserializerInterface,
+    void** ppRootSignatureDeserializer) {
+#if defined(_WIN32)
+    if (!pSrcData || !pRootSignatureDeserializerInterface || !ppRootSignatureDeserializer) {
+        return static_cast<int32_t>(E_INVALIDARG);
+    }
+    const IID target_iid = *reinterpret_cast<const IID*>(pRootSignatureDeserializerInterface);
+    return static_cast<int32_t>(CallSystemD3D12CreateVersionedRootSignatureDeserializer(
         pSrcData,
         srcDataSizeInBytes,
         target_iid,

@@ -125,6 +125,23 @@ SX_HRESULT HCHttpCallRequestSetTimeout(HCCallHandle call, uint32_t timeout_in_se
     return SX_S_OK;
 }
 
+SX_HRESULT HCHttpCallRequestGetUrl(HCCallHandle call, const char** method, const char** url) {
+    if (!call) return SX_E_INVALIDARG;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_calls.find(call) == g_calls.end()) return SX_E_INVALIDARG;
+    if (method) *method = call->method.c_str();
+    if (url) *url = call->url.c_str();
+    return SX_S_OK;
+}
+
+SX_HRESULT HCHttpCallRequestGetTimeout(HCCallHandle call, uint32_t* timeout_in_seconds) {
+    if (!call || !timeout_in_seconds) return SX_E_INVALIDARG;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_calls.find(call) == g_calls.end()) return SX_E_INVALIDARG;
+    *timeout_in_seconds = call->timeout_seconds;
+    return SX_S_OK;
+}
+
 SX_HRESULT HCHttpCallPerformAsync(HCCallHandle call, XAsyncBlock* async_block) {
     if (!call) return SX_E_INVALIDARG;
     {

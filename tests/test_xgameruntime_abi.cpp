@@ -166,6 +166,9 @@ int main() {
     CHECK(XSystemGetXboxLiveSandboxId(sizeof(buf), buf, &used) == XGR_S_OK);
     CHECK(std::strcmp(buf, "RETAIL") == 0);
 
+    XSystemAllowFullDownloadBandwidth(true);
+    XSystemAllowFullDownloadBandwidth(false);
+
     // 3. XTaskQueue (manual + monitor + delayed + duplicate + terminate)
     XTaskQueueHandle manual_q = nullptr;
     CHECK(XTaskQueueCreate(XTaskQueueDispatchMode_Manual,
@@ -173,14 +176,18 @@ int main() {
                            &manual_q) == XGR_S_OK);
     CHECK(manual_q != nullptr);
     CHECK(XSystemIsHandleValid(manual_q));
+    CHECK(XTaskQueueIsEmpty(manual_q, XTaskQueuePort_Work) == true);
+    CHECK(XTaskQueueIsEmpty(manual_q, XTaskQueuePort_Completion) == true);
 
     XTaskQueueRegistrationToken mon_token{};
     CHECK(XTaskQueueRegisterMonitor(manual_q, nullptr, MonitorCb, &mon_token) == XGR_S_OK);
 
     int counter = 5;
     CHECK(XTaskQueueSubmitCallback(manual_q, XTaskQueuePort_Work, &counter, ManualWorkCb) == XGR_S_OK);
+    CHECK(XTaskQueueIsEmpty(manual_q, XTaskQueuePort_Work) == false);
     CHECK(g_monitor_hits.load() == 1);
     CHECK(XTaskQueueDispatch(manual_q, XTaskQueuePort_Work, 0) == true);
+    CHECK(XTaskQueueIsEmpty(manual_q, XTaskQueuePort_Work) == true);
     CHECK(counter == 15);
     CHECK(g_manual_work_hits.load() == 1);
     CHECK(XTaskQueueDispatch(manual_q, XTaskQueuePort_Work, 0) == false);
@@ -257,6 +264,26 @@ int main() {
     XUserPrivilegeDenyReason deny = XUserPrivilegeDenyReason_Unknown;
     CHECK(XUserCheckPrivilege(user, XUserPrivilegeOptions_None, XUserPrivilege_Multiplayer, &has_priv, &deny) == XGR_S_OK);
     CHECK(has_priv && deny == XUserPrivilegeDenyReason_None);
+
+    // XUserGetTokenAndSignatureAsync
+    XAsyncBlock token_async{};
+    token_async.queue = tp_q;
+    CHECK(XUserGetTokenAndSignatureAsync(nullptr, XUserGetTokenAndSignatureOptions_None, "GET", "https://auth.xboxlive.com", 0, nullptr, 0, nullptr, &token_async) == XGR_E_INVALIDARG);
+    CHECK(XUserGetTokenAndSignatureAsync(user, XUserGetTokenAndSignatureOptions_None, "GET", "https://auth.xboxlive.com", 0, nullptr, 0, nullptr, nullptr) == XGR_E_INVALIDARG);
+    CHECK(XUserGetTokenAndSignatureAsync(user, XUserGetTokenAndSignatureOptions_None, "GET", "https://auth.xboxlive.com", 0, nullptr, 0, nullptr, &token_async) == XGR_S_OK);
+
+    size_t token_buf_size = 0;
+    CHECK(XUserGetTokenAndSignatureResultSize(&token_async, &token_buf_size) == XGR_S_OK && token_buf_size > sizeof(XUserGetTokenAndSignatureData));
+
+    std::vector<uint8_t> token_buffer(token_buf_size);
+    XUserGetTokenAndSignatureData* token_data = nullptr;
+    size_t token_buf_used = 0;
+    CHECK(XUserGetTokenAndSignatureResult(&token_async, 4, token_buffer.data(), &token_data, &token_buf_used) == XGR_E_NOT_SUFFICIENT_BUFFER);
+    CHECK(XUserGetTokenAndSignatureResult(&token_async, token_buf_size, token_buffer.data(), &token_data, &token_buf_used) == XGR_S_OK);
+    CHECK(token_data != nullptr);
+    CHECK(token_data->token != nullptr && std::strlen(token_data->token) > 0);
+    CHECK(token_data->signature != nullptr && std::strlen(token_data->signature) > 0);
+    CHECK(token_buf_used == token_buf_size);
 
     // 6. XGameSave (async init, write, sync + async read, enumerate, delete)
     XAsyncBlock save_init_async{};
@@ -358,8 +385,35 @@ int main() {
     CHECK(XGameSaveEnumerateBlobInfo(container, &blobs_after_del, EnumBlobsCb) == XGR_S_OK);
     CHECK(blobs_after_del.empty());
 
+    // Test async quota
+    XAsyncBlock q_async{};
+    q_async.queue = tp_q;
+    CHECK(XGameSaveGetRemainingQuotaAsync(provider, &q_async) == XGR_S_OK);
+    int64_t async_q = 0;
+    CHECK(XGameSaveGetRemainingQuotaResult(&q_async, &async_q) == XGR_S_OK);
+    CHECK(async_q > 0);
+
+    // Test container enumeration by prefix
+    std::vector<std::string> prefix_containers;
+    CHECK(XGameSaveEnumerateContainerInfoByName(provider, "slot", &prefix_containers, EnumContainersCb) == XGR_S_OK);
+    CHECK(!prefix_containers.empty());
+
     XGameSaveCloseContainer(container);
-    CHECK(XGameSaveDeleteContainer(provider, "slot_0") == XGR_S_OK);
+
+    // Test async delete
+    XAsyncBlock del_async{};
+    del_async.queue = tp_q;
+    CHECK(XGameSaveDeleteContainerAsync(provider, "slot_0", &del_async) == XGR_S_OK);
+    CHECK(XGameSaveDeleteContainerResult(&del_async) == XGR_S_OK);
+
+    // Test XGameSaveFiles quota async
+    XAsyncBlock files_q_async{};
+    files_q_async.queue = tp_q;
+    CHECK(XGameSaveFilesGetRemainingQuotaAsync(user, "00000000-0000-0000-0000-00005ca00001", &files_q_async) == XGR_S_OK);
+    int64_t files_async_q = 0;
+    CHECK(XGameSaveFilesGetRemainingQuotaResult(&files_q_async, &files_async_q) == XGR_S_OK);
+    CHECK(files_async_q > 0);
+
     XGameSaveCloseProvider(provider);
 
     // 7. XMem hooks & VirtualAlloc
@@ -375,9 +429,19 @@ int main() {
     CHECK(g_custom_allocs.load() == 1 && g_custom_frees.load() == 1);
     CHECK(XMemSetAllocationHooks(nullptr, nullptr) == XGR_S_OK);
 
+    XMemResetVirtualAllocStats();
+    XMemVirtualAllocStats stats_before{};
+    CHECK(XMemGetVirtualAllocStats(&stats_before) == XGR_S_OK);
+    CHECK(stats_before.totalAllocatedBytes == 0);
+
     void* vmem = XMemVirtualAlloc(nullptr, 65536, 0, 0, 0);
     CHECK(vmem != nullptr);
     std::memset(vmem, 0xAB, 4096);
+
+    XMemVirtualAllocStats stats_after{};
+    CHECK(XMemGetVirtualAllocStats(&stats_after) == XGR_S_OK);
+    CHECK(stats_after.totalAllocatedBytes >= 65536);
+
     CHECK(XMemVirtualFree(vmem, 0, 0) == true);
 
     // The call a title makes: commit only, XMem flags 1, PAGE_READWRITE.
@@ -400,8 +464,12 @@ int main() {
     CHECK(XThreadIsTimeSensitive() == false);
     CHECK(XThreadSetTimeSensitive(true) == XGR_S_OK);
     CHECK(XThreadIsTimeSensitive() == true);
-    CHECK(XThreadSetTimeSensitive(false) == XGR_S_OK);
+    bool thread_ts = false;
+    CHECK(XThreadGetTimeSensitive(&thread_ts) == XGR_S_OK && thread_ts == true);
+    CHECK(XThreadSetTimeSensitiveThread(1234, false) == XGR_S_OK);
+    CHECK(XThreadIsTimeSensitive() == false);
     XThreadAssertNotTimeSensitive();
+    XThreadAssertTimeSensitive();
 
     // Cleanup
     XUserCloseHandle(user);

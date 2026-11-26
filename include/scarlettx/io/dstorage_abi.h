@@ -86,6 +86,7 @@ struct DSTORAGE_ERROR_RECORD {
 typedef void (*DSTORAGE_SIGNAL_CALLBACK)(uint64_t value, void* context);
 
 SCARLETTX_DSTORAGE_API int32_t DStorageSetConfiguration(const DSTORAGE_CONFIGURATION* config);
+SCARLETTX_DSTORAGE_API int32_t DStorageGetConfiguration(DSTORAGE_CONFIGURATION* out_config);
 SCARLETTX_DSTORAGE_API int32_t DStorageGetFactory(uint64_t* out_factory);
 SCARLETTX_DSTORAGE_API int32_t DStorageDestroyFactory(uint64_t factory);
 

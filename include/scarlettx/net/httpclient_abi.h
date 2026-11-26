@@ -52,6 +52,13 @@ SCARLETTX_HC_API SX_HRESULT HCHttpCallRequestSetRequestBodyBytes(
 SCARLETTX_HC_API SX_HRESULT HCHttpCallRequestSetTimeout(
     HCCallHandle call,
     uint32_t timeout_in_seconds);
+SCARLETTX_HC_API SX_HRESULT HCHttpCallRequestGetUrl(
+    HCCallHandle call,
+    const char** method,
+    const char** url);
+SCARLETTX_HC_API SX_HRESULT HCHttpCallRequestGetTimeout(
+    HCCallHandle call,
+    uint32_t* timeout_in_seconds);
 
 // Executes the HTTP call (against registered mocks or offline synthetic handler)
 // and completes the provided XAsyncBlock (if non-null).
