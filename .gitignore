@@ -16,3 +16,5 @@ out/
 compile_commands.json
 CMakeUserPresets.json
 Testing/
+__pycache__/
+*.pyc

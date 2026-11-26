@@ -14,3 +14,5 @@
             std::exit(1);                                                         \
         }                                                                         \
     } while (0)
+
+#define SX_CHECK(cond) SX_REQUIRE(cond)

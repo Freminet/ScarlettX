@@ -139,6 +139,36 @@ set_target_properties(XCurl PROPERTIES PREFIX "" OUTPUT_NAME "XCurl")
 target_link_libraries(XCurl PRIVATE scarlettx_core)
 target_compile_definitions(XCurl PRIVATE SCARLETTX_BUILDING_XCURL=1)
 
+add_library(kernelx SHARED src/kernel/kernelx_shim.cpp)
+set_target_properties(kernelx PROPERTIES PREFIX "" OUTPUT_NAME "kernelx")
+target_link_libraries(kernelx PRIVATE scarlettx_core)
+target_compile_definitions(kernelx PRIVATE SCARLETTX_BUILDING_KERNELX=1)
+
+add_library(xvc_crypto SHARED src/loader/xvc_crypto.cpp)
+set_target_properties(xvc_crypto PROPERTIES PREFIX "" OUTPUT_NAME "xvc_crypto")
+target_link_libraries(xvc_crypto PRIVATE scarlettx_core)
+target_compile_definitions(xvc_crypto PRIVATE SCARLETTX_BUILDING_XVC_CRYPTO=1)
+
+add_library(xbox_codecs SHARED src/shims/codecs_shim.cpp)
+set_target_properties(xbox_codecs PROPERTIES PREFIX "" OUTPUT_NAME "xbox_codecs")
+target_link_libraries(xbox_codecs PRIVATE scarlettx_core)
+target_compile_definitions(xbox_codecs PRIVATE SCARLETTX_BUILDING_CODECS=1)
+
+add_library(xsapi SHARED src/shims/xsapi_shim.cpp)
+set_target_properties(xsapi PROPERTIES PREFIX "" OUTPUT_NAME "xsapi")
+target_link_libraries(xsapi PRIVATE scarlettx_core)
+target_compile_definitions(xsapi PRIVATE SCARLETTX_BUILDING_XSAPI=1)
+
+add_library(xs2_lifting SHARED src/gpu/xs2_lifting_shim.cpp)
+set_target_properties(xs2_lifting PROPERTIES PREFIX "" OUTPUT_NAME "xs2_lifting")
+target_link_libraries(xs2_lifting PRIVATE scarlettx_core)
+target_compile_definitions(xs2_lifting PRIVATE SCARLETTX_BUILDING_XS2=1)
+
+add_library(vulkan_backend SHARED src/gpu/vulkan_backend_shim.cpp)
+set_target_properties(vulkan_backend PROPERTIES PREFIX "" OUTPUT_NAME "vulkan_backend")
+target_link_libraries(vulkan_backend PRIVATE scarlettx_core)
+target_compile_definitions(vulkan_backend PRIVATE SCARLETTX_BUILDING_VULKAN=1)
+
 # ---------------------------------------------------------------------------
 # ScarlettX CLI Emulator Runner
 # ---------------------------------------------------------------------------
@@ -160,6 +190,12 @@ add_dependencies(scarlettx
     amd_fidelityfx_loader_xbox
     libHttpClient_GDK
     XCurl
+    kernelx
+    xvc_crypto
+    xbox_codecs
+    xsapi
+    xs2_lifting
+    vulkan_backend
 )
 
 # ---------------------------------------------------------------------------
@@ -344,6 +380,24 @@ target_link_libraries(test_middleware_net PRIVATE
     XCurl
     xgameruntime
 )
+
+scarlettx_add_test(test_kernelx tests/test_kernelx.cpp)
+target_link_libraries(test_kernelx PRIVATE kernelx)
+
+scarlettx_add_test(test_xvc_crypto tests/test_xvc_crypto.cpp)
+target_link_libraries(test_xvc_crypto PRIVATE xvc_crypto)
+
+scarlettx_add_test(test_codecs tests/test_codecs.cpp)
+target_link_libraries(test_codecs PRIVATE xbox_codecs)
+
+scarlettx_add_test(test_xsapi tests/test_xsapi.cpp)
+target_link_libraries(test_xsapi PRIVATE xsapi)
+
+scarlettx_add_test(test_xs2_lifting tests/test_xs2_lifting.cpp)
+target_link_libraries(test_xs2_lifting PRIVATE xs2_lifting)
+
+scarlettx_add_test(test_vulkan_backend tests/test_vulkan_backend.cpp)
+target_link_libraries(test_vulkan_backend PRIVATE vulkan_backend)
 
 scarlettx_add_test(test_scarlett_arena_e2e tests/test_scarlett_arena_e2e.cpp)
 target_link_libraries(test_scarlett_arena_e2e PRIVATE dstorage)

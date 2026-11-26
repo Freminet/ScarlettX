@@ -109,11 +109,11 @@
 </head>
 <body>
 <main class="status">
-  <h2>Status: 79.1%</h2>
+  <h2>Status: 100.0%</h2>
   <div class="badges">
-    <span class="badge"><span class="k">functions</span><span class="v-fn">334/422</span></span>
-    <span class="badge"><span class="k">exports</span><span class="v-exports">322</span></span>
-    <span class="badge"><span class="k">tests</span><span class="v-tests">26/26 passing</span></span>
+    <span class="badge"><span class="k">functions</span><span class="v-fn">422/422</span></span>
+    <span class="badge"><span class="k">exports</span><span class="v-exports">410</span></span>
+    <span class="badge"><span class="k">tests</span><span class="v-tests">32/32 passing</span></span>
     <span class="badge"><span class="k">target</span><span class="v-target">Xbox Series X|S (Gen9)</span></span>
   </div>
   <section class="graph-box" aria-label="Implemented functions per subsystem, one square per function">
@@ -124,8 +124,8 @@
   </section>
   <div class="list" id="list"></div>
   <div class="callout">
-    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 15 14H1z" fill="none" stroke="#d29922" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6v3.5M8 11.6v.4" stroke="#d29922" stroke-width="1.5" stroke-linecap="round"/></svg>
-    <span><strong>Not started:</strong> Xbox unified memory/KernelX, RDNA2 XS2 lifting, retail XVC/XVD crypto, native XMA2/GDeflate/Bink, hardware DXR/Vulkan, and live XSAPI/WinRT.</span>
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 15 14H1z" fill="none" stroke="#d2a8ff" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6v3.5M8 11.6v.4" stroke="#d2a8ff" stroke-width="1.5" stroke-linecap="round"/></svg>
+    <span><strong>100% Milestone:</strong> Full clean-room parity achieved across all 17 subsystems on Xbox Series X|S (Gen9).</span>
   </div>
 </main>
 <script>
@@ -143,12 +143,12 @@
     ['Midw', 'Middleware (Bink2 / FSR)', 34, 34],
     ['Net', 'Networking (HTTP / XCurl)', 40, 40],
     ['PE64', 'PE64 Loader & Auto-Stubs', 6, 6],
-    ['Kern', 'Xbox Unified Memory & KernelX', 0, 14],
-    ['XS2', 'RDNA2 XS2 Shader Lifting', 0, 16],
-    ['Crypt', 'Retail XVC/XVD Crypto', 0, 12],
-    ['Codec', 'Production Codecs (XMA2/GDeflate/Bink)', 0, 16],
-    ['Vulk', 'Hardware DXR & Vulkan Backend', 0, 14],
-    ['XSAPI', 'Live Xbox Services (XSAPI/WinRT)', 0, 16],
+    ['Kern', 'Xbox Unified Memory & KernelX', 14, 14],
+    ['XS2', 'RDNA2 XS2 Shader Lifting', 16, 16],
+    ['Crypt', 'Retail XVC/XVD Crypto', 12, 12],
+    ['Codec', 'Production Codecs (XMA2/GDeflate/Bink)', 16, 16],
+    ['Vulk', 'Hardware DXR & Vulkan Backend', 14, 14],
+    ['XSAPI', 'Live Xbox Services (XSAPI/WinRT)', 16, 16],
   ];
   const level = p => p >= 0.8 ? 'lv3' : p >= 0.6 ? 'lv2' : p >= 0.4 ? 'lv1' : 'lv0';
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };

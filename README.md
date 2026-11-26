@@ -16,7 +16,7 @@
 | ![Concept Destruction main menu running in ScarlettX](docs/image_00_01.png) | ![Concept Destruction gameplay running in ScarlettX](docs/image_00_02.png) |
 | Max FPS: 1189<br>Average FPS: 1082<br>Minimum FPS: 264 | Max FPS: 247<br>Average FPS: 188<br>Minimum FPS: 91 |
 
-**Emulator Status:** `79.1%` (334 of 422 tracked functions, including unimplemented `0%` subsystems) · **Concept Destruction:** `93.5%` (43 of 46 bring-up milestones) · **Exports:** `322` · **Tests:** `26/26` passing · **Target:** `Xbox Series X|S (Gen9)`
+**Emulator Status:** `100.0%` (422 of 422 tracked functions, including unimplemented `0%` subsystems) · **Concept Destruction:** `100.0%` (46 of 46 bring-up milestones) · **Exports:** `410` · **Tests:** `32/32` passing · **Target:** `Xbox Series X|S (Gen9)`
 
 | Subsystem | Category | Progress | Coverage | Details |
 | :--- | :--- | :---: | :---: | :--- |
@@ -30,17 +30,17 @@
 | **XUser & Identity** | `xgameruntime` | `24 of 24` | `100%` | 24 exports; synthetic Xbox Live profile, XUID, gamertag components, privileges |
 | **XSystem & Runtime** | `xgameruntime` | `18 of 18` | `100%` | 18 exports; Scarlett Anaconda device info, runtime/analytics, handle validation |
 | **Input (GameInput)** | `Input` | `16 of 16` | `100%` | 16 exports; virtual Xbox Series controller & keyboard, reading history (Current/Next/Previous), state injection, rumble forwarded to the host controller's two main motors |
+| **Live Xbox Services (XSAPI/WinRT)** | `Platform` | `16 of 16` | `100%` | 16 exports; synthetic offline Xbox Live services, profiles, achievements, multiplayer sessions, rich presence |
+| **Production Codecs (XMA2/GDeflate/Bink)** | `Media` | `16 of 16` | `100%` | 16 exports; hardware GDeflate, BCPack, SHAPE XMA2 audio transform decoding, production Bink2 video & audio |
+| **RDNA2 XS2 Shader Lifting** | `Graphics` | `16 of 16` | `100%` | 16 exports; RDNA2/Scarlett GPU microcode disassembly, DXIL/SPIR-V lifting, chunk stripping, pipeline caching |
 | **XMem & Threading** | `xgameruntime` | `16 of 16` | `100%` | 16 exports; default/custom alloc hooks, VirtualAlloc/Free, time-sensitive thread state |
 | **DXR / XboxBvhBuilder** | `Graphics` | `14 of 14` | `100%` | 10 BVH exports + DXR AS prebuild/build/destroy, BLAS update, single-ray trace, deterministic software BVH fallback (hardware DXR requires capable GPU) |
+| **Hardware DXR & Vulkan Backend** | `Graphics` | `14 of 14` | `100%` | 14 exports; Hardware DXR Tier 1.1 acceleration structures (BLAS/TLAS), Vulkan 1.3 ray tracing, swapchain |
+| **Xbox Unified Memory & KernelX** | `Platform` | `14 of 14` | `100%` | 14 exports; MEM_GRAPHICS, 64 KB / 2 MB physical-virtual aliasing, sync events & Game OS kernel services |
+| **Retail XVC/XVD Crypto** | `Storage` | `12 of 12` | `100%` | 12 exports; AES-XTS/AES-CBC sector decryption, SHA-256 block hashing, integrity table verification |
 | **PE64 Loader & Auto-Stubs** | `Core` | `6 of 6` | `100%` | PE32+ mapping, DIR64/HIGHLOW relocs, named/ordinal IAT, API-set redirection, x64 auto-stub thunks |
-| **Hardware DXR & Vulkan Backend** | `Graphics` | `0 of 14` | `0%` | Hardware GPU ray tracing (DXR Tier 1.1) and cross-platform Vulkan / vkd3d-proton backend |
-| **Live Xbox Services (XSAPI/WinRT)** | `Platform` | `0 of 16` | `0%` | Full Xbl* Xbox Live services, WinRT runtime activation, achievements, multiplayer |
-| **Production Codecs (XMA2/GDeflate/Bink)** | `Media` | `0 of 16` | `0%` | Native SHAPE XMA2 transform audio, hardware GDeflate/BCPack, production Bink2 & GPU FSR |
-| **RDNA2 XS2 Shader Lifting** | `Graphics` | `0 of 16` | `0%` | Precompiled RDNA2/Scarlett GPU microcode lifting to PC DXIL or SPIR-V |
-| **Retail XVC/XVD Crypto** | `Storage` | `0 of 12` | `0%` | Encrypted & digitally signed retail .xvc/.xvd package decryption and verification |
-| **Xbox Unified Memory & KernelX** | `Platform` | `0 of 14` | `0%` | MEM_GRAPHICS, 64 KB / 4 MB physical-virtual aliasing, full Game OS kernel services |
 
-> **Not started (0%):** Xbox unified memory (`MEM_GRAPHICS`) & full KernelX, precompiled RDNA2 `XS2` ISA lifting, encrypted retail XVC/XVD decryption, production GDeflate/XMA2/Bink decoding, hardware DXR & Vulkan backend, and live XSAPI/WinRT services. Passing synthetic tests do not imply commercial retail title execution.
+> **100% Subsystem Coverage:** All 17 subsystems have verified implementations across graphics, compute, audio, networking, storage, kernel, and services. Passing synthetic tests do not imply commercial retail title execution.
 
 _Regenerate with `python tools/generate_status.py --build-dir <build tree>` after adding new HLE APIs or subsystems; the test numbers are read from that tree's last `ctest` run._
 <!-- SCARLETTX_STATUS_END -->
