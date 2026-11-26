@@ -2002,6 +2002,21 @@ void SCARLETTX_GDK_CALLBACK CmdListClearRenderTargetViewTyped(
 #endif
 }
 intptr_t SCARLETTX_GDK_CALLBACK CmdListNoop(void*, uintptr_t, uintptr_t, uintptr_t) { return 0; }
+intptr_t SCARLETTX_GDK_CALLBACK CmdListFlushPipelineX(void* self, uintptr_t flags, uintptr_t a2, uintptr_t a3) {
+#if defined(_WIN32)
+    if (TraceEnabled()) {
+        std::cerr << "[ScarlettX][d3d12_xs] CmdList::FlushPipelineX(self=" << self
+                  << ", flags=0x" << std::hex << flags << ", a2=0x" << a2
+                  << ", a3=0x" << a3 << std::dec << ")\n";
+    }
+#else
+    (void)self;
+    (void)flags;
+    (void)a2;
+    (void)a3;
+#endif
+    return 0;
+}
 template <int Slot>
 intptr_t SCARLETTX_GDK_CALLBACK CmdListTracedSlot(void*, uintptr_t a1, uintptr_t a2, uintptr_t a3) {
     if (TraceEnabled()) {
@@ -2082,6 +2097,7 @@ std::array<ComVtableFn, 96> BuildCmdListVtable() {
     vtbl[60] = &CmdListNoop;  // SetMarker
     vtbl[61] = &CmdListNoop;  // BeginEvent
     vtbl[62] = &CmdListNoop;  // EndEvent
+    vtbl[67] = &CmdListFlushPipelineX;
     return vtbl;
 }
 const auto kXboxCmdListProxyVtbl = BuildCmdListVtable();
