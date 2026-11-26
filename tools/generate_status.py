@@ -423,7 +423,7 @@ def collect_concept_destruction_metrics() -> list[Subsystem]:
             category="Runtime",
             implemented=6,
             target=6,
-            notes="Every QueryApiImpl table the title requests resolves (task queues, XNetworking, XGame, XSystem, XUser, XGameSave); XUserGetTokenAndSignatureAsync still E_NOTIMPL",
+            notes="Every QueryApiImpl table the title requests resolves (task queues, XNetworking, XGame, XSystem, XUser, XGameSave); XUserGetTokenAndSignatureAsync implemented with synthetic offline token",
         ),
         Subsystem(
             name="d3d12_xs Device & Resources",
@@ -989,8 +989,8 @@ def main() -> None:
         badges=cd_badges,
         heading_prefix="Status of the game Concept Destruction",
         callout_lead="Open issues:",
-        callout_line1="CmdList slot 67 (FlushPipelineX) is unimplemented and",
-        callout_line2="XUserGetTokenAndSignatureAsync returns E_NOTIMPL.",
+        callout_line1="CmdList slot 67 (FlushPipelineX) is unimplemented.",
+        callout_line2="XUserGetTokenAndSignatureAsync resolved.",
     )
 
     html_doc = render_html(subsystems, total_exports, tests_text, tests_ok)

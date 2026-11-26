@@ -289,6 +289,44 @@ bool SCARLETTX_GDK_CALLBACK UserUnregisterForChangeEvent(void*, XTaskQueueRegist
     return id != 0 && id <= g_user_change_tokens.load(std::memory_order_relaxed);
 }
 
+XGameResult SCARLETTX_GDK_CALLBACK UserGetTokenAndSignatureAsync(
+    void* /*self*/,
+    XUserHandle user,
+    XUserGetTokenAndSignatureOptions options,
+    const char* method,
+    const char* url,
+    size_t headerCount,
+    const XUserGetTokenAndSignatureHttpHeader* headers,
+    size_t bodySize,
+    const void* bodyBuffer,
+    XAsyncBlock* async) {
+    const XGameResult hr = XUserGetTokenAndSignatureAsync(
+        user, options, method, url, headerCount, headers, bodySize, bodyBuffer, async);
+    if (Trace()) {
+        std::fprintf(stderr,
+                     "[ScarlettX][xgameruntime] XUserGetTokenAndSignatureAsync(user=%p, url=%s, async=%p) -> 0x%08X\n",
+                     static_cast<void*>(user), url ? url : "(null)", static_cast<void*>(async), static_cast<unsigned>(hr));
+    }
+    return hr;
+}
+
+XGameResult SCARLETTX_GDK_CALLBACK UserGetTokenAndSignatureResultSize(
+    void* /*self*/,
+    XAsyncBlock* async,
+    size_t* bufferSize) {
+    return XUserGetTokenAndSignatureResultSize(async, bufferSize);
+}
+
+XGameResult SCARLETTX_GDK_CALLBACK UserGetTokenAndSignatureResult(
+    void* /*self*/,
+    XAsyncBlock* async,
+    size_t bufferSize,
+    void* buffer,
+    XUserGetTokenAndSignatureData** ptrToBuffer,
+    size_t* bufferUsed) {
+    return XUserGetTokenAndSignatureResult(async, bufferSize, buffer, ptrToBuffer, bufferUsed);
+}
+
 template <size_t... I>
 std::array<Slot, kUserSlots> MakeUserVtbl(std::index_sequence<I...>) {
     std::array<Slot, kUserSlots> vtbl = {reinterpret_cast<Slot>(&UserUnimplemented<static_cast<int>(I)>)...};
@@ -308,6 +346,9 @@ std::array<Slot, kUserSlots> MakeUserVtbl(std::index_sequence<I...>) {
     vtbl[15] = reinterpret_cast<Slot>(&UserGetGamertag);
     vtbl[19] = reinterpret_cast<Slot>(&UserGetAgeGroup);
     vtbl[20] = reinterpret_cast<Slot>(&UserCheckPrivilege);
+    vtbl[23] = reinterpret_cast<Slot>(&UserGetTokenAndSignatureAsync);
+    vtbl[24] = reinterpret_cast<Slot>(&UserGetTokenAndSignatureResultSize);
+    vtbl[25] = reinterpret_cast<Slot>(&UserGetTokenAndSignatureResult);
     vtbl[33] = reinterpret_cast<Slot>(&UserRegisterForChangeEvent);
     vtbl[34] = reinterpret_cast<Slot>(&UserUnregisterForChangeEvent);
     return vtbl;
