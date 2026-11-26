@@ -234,6 +234,11 @@ SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12XsCreateRootSignatureDes
     size_t srcDataSizeInBytes,
     const void* pRootSignatureDeserializerInterface,
     void** ppRootSignatureDeserializer);
+SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12XsCreateVersionedRootSignatureDeserializer(
+    const void* pSrcData,
+    size_t srcDataSizeInBytes,
+    const void* pRootSignatureDeserializerInterface,
+    void** ppRootSignatureDeserializer);
 SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12XsEnableExperimentalFeatures(
     uint32_t numFeatures,
     const void* pIIDs,

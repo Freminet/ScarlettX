@@ -159,6 +159,9 @@ SCARLETTX_XGR_API XGameResult XTaskQueueRegisterWaiter(
 SCARLETTX_XGR_API void XTaskQueueUnregisterWaiter(
     XTaskQueueHandle queue,
     XTaskQueueRegistrationToken token);
+SCARLETTX_XGR_API bool XTaskQueueIsEmpty(
+    XTaskQueueHandle queue,
+    XTaskQueuePort port);
 
 // ---------------------------------------------------------------------------
 // XAsync.h
@@ -261,6 +264,7 @@ SCARLETTX_XGR_API XGameResult XSystemGetXboxLiveSandboxId(
     size_t sandboxIdSize,
     char* sandboxId,
     size_t* sandboxIdUsed);
+SCARLETTX_XGR_API void XSystemAllowFullDownloadBandwidth(bool enable);
 SCARLETTX_XGR_API bool XSystemIsHandleValid(void* handle);
 
 // ---------------------------------------------------------------------------
@@ -330,6 +334,24 @@ enum XUserPrivilegeDenyReason : uint32_t {
     XUserPrivilegeDenyReason_Unknown = 0xFFFFFFFFu,
 };
 
+enum XUserGetTokenAndSignatureOptions : uint32_t {
+    XUserGetTokenAndSignatureOptions_None = 0x00,
+    XUserGetTokenAndSignatureOptions_ForceRefresh = 0x01,
+    XUserGetTokenAndSignatureOptions_Deferred = 0x02,
+};
+
+struct XUserGetTokenAndSignatureHttpHeader {
+    const char* name;
+    const char* value;
+};
+
+struct XUserGetTokenAndSignatureData {
+    size_t tokenSize;
+    size_t signatureSize;
+    const char* token;
+    const char* signature;
+};
+
 SCARLETTX_XGR_API XGameResult XUserAddAsync(
     XUserAddOptions options,
     XAsyncBlock* async);
@@ -358,6 +380,25 @@ SCARLETTX_XGR_API XGameResult XUserCheckPrivilege(
     XUserPrivilege privilege,
     bool* hasPrivilege,
     XUserPrivilegeDenyReason* reason);
+SCARLETTX_XGR_API XGameResult XUserGetTokenAndSignatureAsync(
+    XUserHandle user,
+    XUserGetTokenAndSignatureOptions options,
+    const char* method,
+    const char* url,
+    size_t headerCount,
+    const XUserGetTokenAndSignatureHttpHeader* headers,
+    size_t bodySize,
+    const void* bodyBuffer,
+    XAsyncBlock* async);
+SCARLETTX_XGR_API XGameResult XUserGetTokenAndSignatureResultSize(
+    XAsyncBlock* async,
+    size_t* bufferSize);
+SCARLETTX_XGR_API XGameResult XUserGetTokenAndSignatureResult(
+    XAsyncBlock* async,
+    size_t bufferSize,
+    void* buffer,
+    XUserGetTokenAndSignatureData** ptrToBuffer,
+    size_t* bufferUsed);
 // Legacy convenience helper retained for early synthetic tests.
 SCARLETTX_XGR_API XGameResult XUserGetDefaultXuid(uint64_t* out_xuid);
 

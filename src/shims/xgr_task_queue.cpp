@@ -645,6 +645,17 @@ bool XTaskQueueDispatch(XTaskQueueHandle queue, XTaskQueuePort port, uint32_t ti
     return true;
 }
 
+bool XTaskQueueIsEmpty(XTaskQueueHandle queue, XTaskQueuePort port) {
+    Engine& e = GetEngine();
+    Lock lk(e.mutex);
+    const std::shared_ptr<QueueCore> core = LookupLocked(e, queue);
+    if (!core || static_cast<uint32_t>(port) > 1) {
+        return true;
+    }
+    const std::shared_ptr<Port> p = core->ports[static_cast<uint32_t>(port)];
+    return p->ready.empty();
+}
+
 XGameResult XTaskQueueTerminate(XTaskQueueHandle queue, bool wait, void* callbackContext,
                                 XTaskQueueTerminatedCallback* callback) {
     Engine& e = GetEngine();
