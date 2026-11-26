@@ -166,6 +166,9 @@ int main() {
     CHECK(XSystemGetXboxLiveSandboxId(sizeof(buf), buf, &used) == XGR_S_OK);
     CHECK(std::strcmp(buf, "RETAIL") == 0);
 
+    XSystemAllowFullDownloadBandwidth(true);
+    XSystemAllowFullDownloadBandwidth(false);
+
     // 3. XTaskQueue (manual + monitor + delayed + duplicate + terminate)
     XTaskQueueHandle manual_q = nullptr;
     CHECK(XTaskQueueCreate(XTaskQueueDispatchMode_Manual,
@@ -173,14 +176,18 @@ int main() {
                            &manual_q) == XGR_S_OK);
     CHECK(manual_q != nullptr);
     CHECK(XSystemIsHandleValid(manual_q));
+    CHECK(XTaskQueueIsEmpty(manual_q, XTaskQueuePort_Work) == true);
+    CHECK(XTaskQueueIsEmpty(manual_q, XTaskQueuePort_Completion) == true);
 
     XTaskQueueRegistrationToken mon_token{};
     CHECK(XTaskQueueRegisterMonitor(manual_q, nullptr, MonitorCb, &mon_token) == XGR_S_OK);
 
     int counter = 5;
     CHECK(XTaskQueueSubmitCallback(manual_q, XTaskQueuePort_Work, &counter, ManualWorkCb) == XGR_S_OK);
+    CHECK(XTaskQueueIsEmpty(manual_q, XTaskQueuePort_Work) == false);
     CHECK(g_monitor_hits.load() == 1);
     CHECK(XTaskQueueDispatch(manual_q, XTaskQueuePort_Work, 0) == true);
+    CHECK(XTaskQueueIsEmpty(manual_q, XTaskQueuePort_Work) == true);
     CHECK(counter == 15);
     CHECK(g_manual_work_hits.load() == 1);
     CHECK(XTaskQueueDispatch(manual_q, XTaskQueuePort_Work, 0) == false);

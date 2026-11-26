@@ -91,6 +91,10 @@ SCARLETTX_GAMEINPUT_API int32_t GameInputGetDeviceInfo(
     uint64_t game_input,
     uint64_t device_id,
     GAMEINPUT_DEVICE_INFO* out_info);
+SCARLETTX_GAMEINPUT_API int32_t GameInputFindDeviceFromId(
+    uint64_t game_input,
+    uint64_t device_id,
+    GAMEINPUT_DEVICE_INFO* out_info);
 
 SCARLETTX_GAMEINPUT_API int32_t GameInputGetCurrentReading(
     uint64_t game_input,

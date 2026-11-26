@@ -402,6 +402,16 @@ XGameResult XSystemGetXboxLiveSandboxId(
         sandboxIdUsed);
 }
 
+static std::atomic<bool> g_allow_full_download_bandwidth{false};
+void XSystemAllowFullDownloadBandwidth(bool enable) {
+    g_allow_full_download_bandwidth.store(enable, std::memory_order_relaxed);
+    if (TraceEnabled()) {
+        std::fprintf(stderr, "[ScarlettX][xgameruntime] XSystemAllowFullDownloadBandwidth(%s)\n",
+                     enable ? "true" : "false");
+        std::fflush(stderr);
+    }
+}
+
 bool XSystemIsHandleValid(void* handle) {
     return IsRegisteredHandle(handle) || xgr::IsTaskQueueHandle(handle);
 }

@@ -58,6 +58,10 @@ int main() {
         vm.Option = 0xFFFFFFFFu;
         vm.Result0 = vm.Result1 = ~0ull;
         SX_CHECK(D3D12ConfigureVirtualMemoryX(&vm) >= 0);
+
+        void* deserializer = nullptr;
+        const IID iid_deserializer = __uuidof(ID3D12RootSignatureDeserializer);
+        SX_CHECK(D3D12XsCreateVersionedRootSignatureDeserializer(nullptr, 0, &iid_deserializer, &deserializer) < 0);
         SX_CHECK(vm.Result0 == 0 && vm.Result1 == 0);
         SX_CHECK_EQ(D3D12ConfigureVirtualMemoryX(nullptr), static_cast<int32_t>(0x80070057u));
         vm.Flags = 2;

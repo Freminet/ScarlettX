@@ -108,6 +108,10 @@ int main() {
     SX_CHECK_EQ(info.SupportedRumbleMotors, 0x0Fu);
     SX_CHECK(std::string(info.DisplayName).find("Xbox Series") != std::string::npos);
 
+    GAMEINPUT_DEVICE_INFO found_info{};
+    SX_CHECK_EQ(GameInputFindDeviceFromId(gi, dev_ids[0], &found_info), 0);
+    SX_CHECK_EQ(found_info.VendorId, 0x045Eu);
+
     // 2. Initial neutral reading
     uint64_t r0 = 0;
     SX_CHECK_EQ(GameInputGetCurrentReading(gi, GAMEINPUT_KIND_GAMEPAD, dev_ids[0], &r0), 0);

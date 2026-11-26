@@ -98,6 +98,18 @@ HRESULT CallSystemD3D12CreateRootSignatureDeserializer(
     auto fn = reinterpret_cast<Fn>(GetProcAddress(m, "D3D12CreateRootSignatureDeserializer"));
     return fn ? fn(src, size, riid, ppv) : E_FAIL;
 }
+
+HRESULT CallSystemD3D12CreateVersionedRootSignatureDeserializer(
+    LPCVOID src,
+    SIZE_T size,
+    REFIID riid,
+    void** ppv) {
+    HMODULE m = GetSystemD3D12Module();
+    if (!m) return E_FAIL;
+    using Fn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, REFIID, void**);
+    auto fn = reinterpret_cast<Fn>(GetProcAddress(m, "D3D12CreateVersionedRootSignatureDeserializer"));
+    return fn ? fn(src, size, riid, ppv) : E_FAIL;
+}
 #endif
 
 uint32_t IntervalToHz(uint32_t interval) {
@@ -4284,6 +4296,28 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12XsCreateRootSignatureDeserializer(
     }
     const IID target_iid = *reinterpret_cast<const IID*>(pRootSignatureDeserializerInterface);
     return static_cast<int32_t>(CallSystemD3D12CreateRootSignatureDeserializer(
+        pSrcData,
+        srcDataSizeInBytes,
+        target_iid,
+        ppRootSignatureDeserializer));
+#else
+    (void)pSrcData; (void)srcDataSizeInBytes;
+    (void)pRootSignatureDeserializerInterface; (void)ppRootSignatureDeserializer;
+    return XGR_E_FAIL;
+#endif
+}
+
+int32_t SCARLETTX_GDK_CALLBACK D3D12XsCreateVersionedRootSignatureDeserializer(
+    const void* pSrcData,
+    size_t srcDataSizeInBytes,
+    const void* pRootSignatureDeserializerInterface,
+    void** ppRootSignatureDeserializer) {
+#if defined(_WIN32)
+    if (!pSrcData || !pRootSignatureDeserializerInterface || !ppRootSignatureDeserializer) {
+        return static_cast<int32_t>(E_INVALIDARG);
+    }
+    const IID target_iid = *reinterpret_cast<const IID*>(pRootSignatureDeserializerInterface);
+    return static_cast<int32_t>(CallSystemD3D12CreateVersionedRootSignatureDeserializer(
         pSrcData,
         srcDataSizeInBytes,
         target_iid,

@@ -159,6 +159,9 @@ SCARLETTX_XGR_API XGameResult XTaskQueueRegisterWaiter(
 SCARLETTX_XGR_API void XTaskQueueUnregisterWaiter(
     XTaskQueueHandle queue,
     XTaskQueueRegistrationToken token);
+SCARLETTX_XGR_API bool XTaskQueueIsEmpty(
+    XTaskQueueHandle queue,
+    XTaskQueuePort port);
 
 // ---------------------------------------------------------------------------
 // XAsync.h
@@ -261,6 +264,7 @@ SCARLETTX_XGR_API XGameResult XSystemGetXboxLiveSandboxId(
     size_t sandboxIdSize,
     char* sandboxId,
     size_t* sandboxIdUsed);
+SCARLETTX_XGR_API void XSystemAllowFullDownloadBandwidth(bool enable);
 SCARLETTX_XGR_API bool XSystemIsHandleValid(void* handle);
 
 // ---------------------------------------------------------------------------

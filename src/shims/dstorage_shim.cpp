@@ -376,6 +376,13 @@ int32_t DStorageSetConfiguration(const DSTORAGE_CONFIGURATION* config) {
     return kS_OK;
 }
 
+int32_t DStorageGetConfiguration(DSTORAGE_CONFIGURATION* out_config) {
+    if (!out_config) return kE_INVALIDARG;
+    std::lock_guard<std::mutex> lk(State().mu);
+    *out_config = State().config;
+    return kS_OK;
+}
+
 int32_t DStorageGetFactory(uint64_t* out_factory) {
     if (!out_factory) return kE_INVALIDARG;
     std::lock_guard<std::mutex> lk(State().mu);
