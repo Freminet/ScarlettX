@@ -265,6 +265,30 @@ int main() {
     CHECK(XUserCheckPrivilege(user, XUserPrivilegeOptions_None, XUserPrivilege_Multiplayer, &has_priv, &deny) == XGR_S_OK);
     CHECK(has_priv && deny == XUserPrivilegeDenyReason_None);
 
+    bool is_sys = true;
+    CHECK(XUserIsSystemReserved(user, &is_sys) == XGR_S_OK && !is_sys);
+    bool is_sponsored = true;
+    CHECK(XUserIsSponsoredUser(user, &is_sponsored) == XGR_S_OK && !is_sponsored);
+
+    XUserHandle user_by_id = nullptr;
+    CHECK(XUserFindUserById(0x00090000005CA001ull, &user_by_id) == XGR_S_OK && user_by_id != nullptr);
+    XUserCloseHandle(user_by_id);
+
+    XUserHandle user_by_local = nullptr;
+    XUserLocalId local_id_val{1};
+    CHECK(XUserFindUserByLocalId(local_id_val, &user_by_local) == XGR_S_OK && user_by_local != nullptr);
+    XUserCloseHandle(user_by_local);
+
+    XAsyncBlock priv_ui_async{};
+    priv_ui_async.queue = tp_q;
+    CHECK(XUserResolvePrivilegeWithUiAsync(user, XUserPrivilegeOptions_None, XUserPrivilege_Multiplayer, &priv_ui_async) == XGR_S_OK);
+    CHECK(XUserResolvePrivilegeWithUiResult(&priv_ui_async) == XGR_S_OK);
+
+    XAsyncBlock issue_ui_async{};
+    issue_ui_async.queue = tp_q;
+    CHECK(XUserResolveIssueWithUiAsync(user, "https://support.xbox.com", &issue_ui_async) == XGR_S_OK);
+    CHECK(XUserResolveIssueWithUiResult(&issue_ui_async) == XGR_S_OK);
+
     // XUserGetTokenAndSignatureAsync
     XAsyncBlock token_async{};
     token_async.queue = tp_q;

@@ -116,6 +116,36 @@ SCARLETTX_XAUDIO2_API int32_t XAudio2VoiceSetOutputMatrix(
     uint32_t src_channels,
     uint32_t dst_channels,
     const float* level_matrix);
+SCARLETTX_XAUDIO2_API int32_t XAudio2VoiceGetOutputMatrix(
+    uint64_t voice,
+    uint32_t src_channels,
+    uint32_t dst_channels,
+    float* level_matrix);
+SCARLETTX_XAUDIO2_API int32_t XAudio2VoiceSetChannelVolumes(
+    uint64_t voice,
+    uint32_t channels,
+    const float* volumes);
+SCARLETTX_XAUDIO2_API int32_t XAudio2VoiceGetChannelVolumes(
+    uint64_t voice,
+    uint32_t channels,
+    float* out_volumes);
+SCARLETTX_XAUDIO2_API int32_t XAudio2VoiceEnableEffect(
+    uint64_t voice,
+    uint32_t effect_index);
+SCARLETTX_XAUDIO2_API int32_t XAudio2VoiceDisableEffect(
+    uint64_t voice,
+    uint32_t effect_index);
+SCARLETTX_XAUDIO2_API int32_t XAudio2VoiceDiscontinuity(
+    uint64_t voice);
+SCARLETTX_XAUDIO2_API int32_t XAudio2VoiceExitLoop(
+    uint64_t voice);
+SCARLETTX_XAUDIO2_API int32_t XAudio2CommitChanges(
+    uint64_t engine,
+    uint32_t operation_set);
+SCARLETTX_XAUDIO2_API int32_t XAudio2VoiceSetVolumeRamp(
+    uint64_t voice,
+    float target_volume,
+    uint32_t ramp_duration_ms);
 
 // Headless deterministic software mixer & WAV export
 SCARLETTX_XAUDIO2_API int32_t XAudio2RenderAudioFrames(

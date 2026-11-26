@@ -585,6 +585,93 @@ XGameResult XUserGetDefaultXuid(uint64_t* out_xuid) {
     return XGR_S_OK;
 }
 
+XGameResult XUserFindUserById(uint64_t userId, XUserHandle* handle) {
+    if (!handle) {
+        return XGR_E_INVALIDARG;
+    }
+    auto* user = new (std::nothrow) XUser();
+    if (!user) {
+        return XGR_E_OUTOFMEMORY;
+    }
+    user->xuid = userId;
+    RegisterValidHandle(user);
+    *handle = user;
+    return XGR_S_OK;
+}
+
+XGameResult XUserFindUserByLocalId(XUserLocalId userLocalId, XUserHandle* handle) {
+    if (!handle) {
+        return XGR_E_INVALIDARG;
+    }
+    auto* user = new (std::nothrow) XUser();
+    if (!user) {
+        return XGR_E_OUTOFMEMORY;
+    }
+    user->local_id = userLocalId.value;
+    RegisterValidHandle(user);
+    *handle = user;
+    return XGR_S_OK;
+}
+
+XGameResult XUserIsSystemReserved(XUserHandle user, bool* isSystemReserved) {
+    if (!user || !isSystemReserved) {
+        return XGR_E_INVALIDARG;
+    }
+    *isSystemReserved = false;
+    return XGR_S_OK;
+}
+
+XGameResult XUserIsSponsoredUser(XUserHandle user, bool* isSponsoredUser) {
+    if (!user || !isSponsoredUser) {
+        return XGR_E_INVALIDARG;
+    }
+    *isSponsoredUser = false;
+    return XGR_S_OK;
+}
+
+XGameResult XUserResolvePrivilegeWithUiAsync(
+    XUserHandle user,
+    XUserPrivilegeOptions /*options*/,
+    XUserPrivilege /*privilege*/,
+    XAsyncBlock* async) {
+    if (!user || !async) {
+        return XGR_E_INVALIDARG;
+    }
+    return BeginAsyncOperation(async, [](XAsyncState* st) {
+        CompleteAsyncState(st, XGR_S_OK, 0);
+    });
+}
+
+XGameResult XUserResolvePrivilegeWithUiResult(XAsyncBlock* async) {
+    if (!async) {
+        return XGR_E_INVALIDARG;
+    }
+    XGameResult hr = XAsyncGetStatus(async, true);
+    xgr::ReleaseHleAsyncResult(async);
+    return hr;
+}
+
+XGameResult XUserResolveIssueWithUiAsync(
+    XUserHandle user,
+    const char* /*url*/,
+    XAsyncBlock* async) {
+    if (!user || !async) {
+        return XGR_E_INVALIDARG;
+    }
+    return BeginAsyncOperation(async, [](XAsyncState* st) {
+        CompleteAsyncState(st, XGR_S_OK, 0);
+    });
+}
+
+XGameResult XUserResolveIssueWithUiResult(XAsyncBlock* async) {
+    if (!async) {
+        return XGR_E_INVALIDARG;
+    }
+    XGameResult hr = XAsyncGetStatus(async, true);
+    xgr::ReleaseHleAsyncResult(async);
+    return hr;
+}
+
 XGameResult XUserGetTokenAndSignatureAsync(
     XUserHandle user,
     XUserGetTokenAndSignatureOptions /*options*/,

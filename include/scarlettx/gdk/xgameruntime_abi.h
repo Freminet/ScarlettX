@@ -401,6 +401,31 @@ SCARLETTX_XGR_API XGameResult XUserGetTokenAndSignatureResult(
     size_t* bufferUsed);
 // Legacy convenience helper retained for early synthetic tests.
 SCARLETTX_XGR_API XGameResult XUserGetDefaultXuid(uint64_t* out_xuid);
+SCARLETTX_XGR_API XGameResult XUserFindUserById(
+    uint64_t userId,
+    XUserHandle* handle);
+SCARLETTX_XGR_API XGameResult XUserFindUserByLocalId(
+    XUserLocalId userLocalId,
+    XUserHandle* handle);
+SCARLETTX_XGR_API XGameResult XUserIsSystemReserved(
+    XUserHandle user,
+    bool* isSystemReserved);
+SCARLETTX_XGR_API XGameResult XUserIsSponsoredUser(
+    XUserHandle user,
+    bool* isSponsoredUser);
+SCARLETTX_XGR_API XGameResult XUserResolvePrivilegeWithUiAsync(
+    XUserHandle user,
+    XUserPrivilegeOptions options,
+    XUserPrivilege privilege,
+    XAsyncBlock* async);
+SCARLETTX_XGR_API XGameResult XUserResolvePrivilegeWithUiResult(
+    XAsyncBlock* async);
+SCARLETTX_XGR_API XGameResult XUserResolveIssueWithUiAsync(
+    XUserHandle user,
+    const char* url,
+    XAsyncBlock* async);
+SCARLETTX_XGR_API XGameResult XUserResolveIssueWithUiResult(
+    XAsyncBlock* async);
 
 // ---------------------------------------------------------------------------
 // XGameSave.h
